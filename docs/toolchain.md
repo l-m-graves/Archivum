@@ -13,6 +13,17 @@ Everything a build depends on, and whether it is pinned to an exact version.
 | GitHub Actions | `actions/checkout@v4` | major tag, not commit SHA (see below) |
 | Third-party libraries | none at Stage 0 | vcpkg manifest with a pinned baseline arrives in Stage 1 |
 
+## Observed in CI run 1 (2026-09-15)
+
+| Job | Versions printed |
+|---|---|
+| windows-2022 | Visual Studio 17.14.37614, MSVC 19.44.35228 (toolset 14.44), CMake 3.31.6, Windows SDK 10.0.26100 targeting 10.0.20348 |
+| ubuntu:22.04 container | GCC 12 (distribution package), CMake 3.22, git 2.34.1 |
+
+`actions/checkout@v4` targets Node 20, which the runners now force onto
+Node 24 with a warning. Move to the v5 tag (or a pinned SHA) in the Stage 1
+change.
+
 ## Not yet pinned, and why
 
 - **`actions/checkout` by SHA and `ubuntu:22.04` by digest.** This session
