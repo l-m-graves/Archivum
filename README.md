@@ -39,6 +39,7 @@ docs/                design, formats, durability model, testing model
 
 - `docs/proposal.md`: the original proposal and architecture diagram.
 - `docs/estimate-v2.md`: revised estimate and stage plan after instructions v2.
+- `docs/estimate-v3-pipeline.md`: estimates, cuts, and the two-database confirmation for the pipeline document.
 - `docs/testing/fault-model.md`: what the crash shim simulates and how tests use it.
 - `docs/durability.md`: what a durable write promises, and what it cannot.
 - `docs/journal-format.md`: on-disk format of the append-only journal.
