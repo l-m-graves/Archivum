@@ -3,10 +3,22 @@
   "cmakeMinimumRequired": { "major": 3, "minor": 22, "patch": 0 },
   "configurePresets": [
     {
+      "name": "vcpkg-base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg_installed",
+        "VCPKG_MANIFEST_MODE": "ON",
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/triplets"
+      }
+    },
+    {
       "name": "linux-base",
       "hidden": true,
+      "inherits": "vcpkg-base",
       "generator": "Ninja",
-      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": { "VCPKG_TARGET_TRIPLET": "x64-linux-cxx20" },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
     },
     {
@@ -23,10 +35,14 @@
     },
     {
       "name": "windows",
-      "displayName": "Windows (MSVC 2022, x64, multi-config)",
+      "inherits": "vcpkg-base",
+      "displayName": "Windows (MSVC 2022, x64, static CRT, multi-config)",
       "generator": "Visual Studio 17 2022",
       "architecture": { "value": "x64", "strategy": "set" },
-      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x64-windows-static-cxx20",
+        "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>"
+      },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     }
   ],

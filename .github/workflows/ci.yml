@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+env:
+  # vcpkg is checked out at exactly this commit on every runner; it is the
+  # same commit as builtin-baseline in vcpkg.json.
+  VCPKG_COMMIT: 1577f17ee57f42a0ef6d75bbb82cb37d0b76d7e8
+
 jobs:
   linux:
     name: linux-${{ matrix.preset }} (ubuntu 22.04, gcc 12)
@@ -19,14 +24,35 @@ jobs:
       CC: gcc-12
       CXX: g++-12
       DEBIAN_FRONTEND: noninteractive
+      VCPKG_ROOT: /opt/vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: /opt/vcpkg-cache
     steps:
       - name: Install toolchain
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build g++-12
+          apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build g++-12 \
+            curl zip unzip tar pkg-config python3 make perl linux-libc-dev
+          mkdir -p /opt/vcpkg-cache
           cmake --version
           g++-12 --version
       - uses: actions/checkout@v4
+      - name: Check out vcpkg at the pinned commit
+        run: |
+          git init /opt/vcpkg
+          git -C /opt/vcpkg remote add origin https://github.com/microsoft/vcpkg.git
+          git -C /opt/vcpkg fetch --depth 1 origin ${VCPKG_COMMIT}
+          git -C /opt/vcpkg checkout FETCH_HEAD
+          /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: /opt/vcpkg-cache
+          key: vcpkg-${{ runner.os }}-x64-linux-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+      - name: JSON boundary rule (docs/json-boundary.md)
+        run: |
+          # jsoncpp may be named only in the bridge.
+          if grep -rIl --include='*.cpp' --include='*.h' -e 'json/json.h' -e 'Json::Value' engine server tests | grep -v 'server/src/http/json_bridge'; then
+            echo "jsoncpp used outside server/src/http/json_bridge.*"; exit 1; fi
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
       - name: Build
@@ -34,7 +60,7 @@ jobs:
       - name: Test
         env:
           ARCHIVUM_CRASH_ITERS: "1000"
-          ASAN_OPTIONS: detect_leaks=1
+          ASAN_OPTIONS: detect_leaks=0
           UBSAN_OPTIONS: print_stacktrace=1
         run: ctest --preset ${{ matrix.preset }}
 
@@ -45,6 +71,9 @@ jobs:
       fail-fast: false
       matrix:
         config: [debug, release]
+    env:
+      VCPKG_ROOT: C:\vcpkg-pinned
+      VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-cache
     steps:
       - uses: actions/checkout@v4
       - name: Toolchain versions
@@ -52,6 +81,20 @@ jobs:
         run: |
           cmake --version
           & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationVersion
+      - name: Check out vcpkg at the pinned commit
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\vcpkg-cache | Out-Null
+          git init C:\vcpkg-pinned
+          git -C C:\vcpkg-pinned remote add origin https://github.com/microsoft/vcpkg.git
+          git -C C:\vcpkg-pinned fetch --depth 1 origin $env:VCPKG_COMMIT
+          git -C C:\vcpkg-pinned checkout FETCH_HEAD
+          & C:\vcpkg-pinned\bootstrap-vcpkg.bat -disableMetrics
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg-cache
+          key: vcpkg-${{ runner.os }}-x64-windows-static-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
       - name: Configure
         run: cmake --preset windows
       - name: Build

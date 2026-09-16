@@ -1,0 +1,19 @@
+{
+  "listen": { "address": "0.0.0.0", "port": 8443, "io_threads": 0 },
+  "tls": {
+    "certificate_pem": "C:/ProgramData/Archivum/tls/server.crt",
+    "private_key_pem": "C:/ProgramData/Archivum/tls/server.key",
+    "min_version": "1.2",
+    "ciphersuites_tls13": "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256",
+    "ciphers_tls12": "ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256"
+  },
+  "oidc": {
+    "issuer": "https://login.microsoftonline.com/<tenant-id>/v2.0",
+    "audience": "api://archivum",
+    "discovery_url": "https://login.microsoftonline.com/<tenant-id>/v2.0/.well-known/openid-configuration",
+    "clock_skew_seconds": 120,
+    "jwks_refresh_min_interval_seconds": 60,
+    "jwks_default_max_age_seconds": 3600
+  },
+  "trusted_proxies": []
+}

@@ -1,0 +1,129 @@
+# Stage 1 report: the Drogon spike
+
+Gate from instructions v2, Q4, and rulings v3, section 6. Status per point
+below. Everything here was measured on the code in this commit; the
+Windows results are read from the CI run linked in `docs/toolchain.md`.
+
+## Gate status
+
+| # | Requirement | Status |
+|---|---|---|
+| 1 | TLS server with OpenSSL, statically linked, on Windows, with a certificate from a real issuer | **Partly.** TLS server with OpenSSL statically linked (vcpkg `x64-windows-static-cxx20`) builds and its tests pass on the Windows CI runner with a test-issued certificate. The run with a certificate from your issuer is yours: point `tls.certificate_pem` and `tls.private_key_pem` at it and hit `/healthz`. Blocked on `[FILL: TLS certificate issuer]` |
+| 2 | `drogon::HttpClient` fetching the discovery document and JWKS over HTTPS | **Done.** Chain, expiry, and hostname verified; a fetch against an untrusted certificate, or with the wrong trust anchor, fails (test `jwks_fetch_fails_against_untrusted_certificate`). No libcurl, no WinHTTP |
+| 3 | Entra-shaped token validated with jwt-cpp end to end against the local test issuer | **Done.** RS256, `iss`, `aud`, `exp`, `nbf`, 120 s skew, `oid` and `tid` required; unknown `kid` triggers one rate-limited refresh; JWKS cached per `Cache-Control: max-age`; expired, future, wrong-audience, wrong-issuer, tampered, rogue-key, no-`oid`, no-`exp` tokens rejected |
+| 4 | Event-loop behaviour under a saturating client, reported not tuned | **Done.** Numbers and reading below |
+| + | Coroutine handlers link cleanly | **Done** on GCC 13 locally; both routes are `drogon::Task<HttpResponsePtr>` and the validator is a coroutine. CI confirms MSVC and GCC 12 |
+| + | `std::format` check | Available with GCC 13 and MSVC 2022. GCC 12 (the CI container and the Linux deployment target) reports at configure time; see the CI log line "std::format available". Recommendation stands: do not use it |
+| + | vcpkg manifest with pinned baseline | **Done.** `vcpkg.json` builtin-baseline `1577f17ee57f42a0ef6d75bbb82cb37d0b76d7e8`; CI checks vcpkg out at that commit |
+
+## What was built
+
+- `server/`: configuration loader (strict allow-list keys, fails closed),
+  OIDC validator, JSON bridge, app wiring, `archivum serve --config`.
+- `tests/server/`: run-time test PKI (RSA keys, self-signed certificates,
+  nothing stored in the repository), a local test issuer serving discovery
+  and JWKS on the same Drogon app, eleven integration tests, and the
+  saturation test.
+- Two listeners in the tests: the main one at minimum TLS 1.3, a second at
+  minimum 1.2, so the protocol policy is asserted with raw OpenSSL
+  handshakes rather than assumed.
+
+## Saturation results
+
+Linux, RelWithDebInfo, 4-core VM, client and server in the same process,
+server on 2 IO threads, every request a full `/api/v1/whoami` with an RS256
+verification. Warm connections; the connection storm is reported
+separately.
+
+| Connections | Client threads | Throughput req/s | p50 ms | p95 ms | p99 ms | max ms | Errors | Health probe max ms during load |
+|---|---|---|---|---|---|---|---|---|
+| 16 | 2 | 1232 | 12 | 25 | 42 | 61 | 0 | 268 |
+| 64 | 2 | 1190 | 51 | 104 | 125 | 193 | 0 | 477 |
+| 256 | 2 | 1372 | 183 | 255 | 285 | 462 | 0 | 1190 |
+| 512 | 4 | 1369 | 373 | 447 | 535 | 789 | 0 | 2169 |
+
+Connection storm (all connections opened at once, first response measured):
+30 to 33 ms per connection at 16 to 256 connections, 49 ms at 512 with four
+client threads competing for the same four cores. Recovery: `/healthz`
+answered in 64 to 78 ms on a fresh connection within one second of the
+load stopping, every time.
+
+### Reading
+
+- **When the loop is backed up, requests queue; nothing is rejected.**
+  Throughput is flat at about 1,200 to 1,370 req/s from 16 to 512
+  connections, and latency grows linearly with the number of connections
+  (roughly 0.7 ms per open connection at p50). No 503s, no resets, no
+  timeouts, zero non-200 responses to valid tokens. Drogon has no request
+  queue limit by default; the only cap is `setMaxConnectionNum`
+  (default 100,000).
+- **The health probe shares the IO loops**, so under 512 connections it
+  took up to 2.2 s. A monitoring system polling `/healthz` will see
+  latency, not failure, when the server is saturated. That is acceptable
+  for v1 and worth knowing when setting alert thresholds.
+- **The connection storm cost is the client side.** trantor creates a new
+  TLS context per client connection (`TcpClient::enableSSL`, loading the
+  system trust store each time), about 30 ms here. It also means each
+  JWKS refresh costs about 30 ms of setup; refreshes are rare so this is
+  fine, but a client library built on Drogon would want a shared context.
+- **The numbers are a floor.** Client and server shared four cores and the
+  build carried debug info. Payroll load is 10,000 writes a day; this
+  server answered 8,000 authenticated requests in six seconds.
+
+## Findings that affect later stages
+
+1. **trantor overrides the TLS policy after applying configuration
+   commands.** `OpenSSLProvider.cc` in trantor 1.5.28 applies
+   `SSL_CONF_cmd` options, then unconditionally calls
+   `SSL_CTX_set_min_proto_version(TLS1_2)` (line 197) and
+   `SSL_CTX_set_cipher_list("MEDIUM:HIGH:!aNULL:!MD5:!RC4:!3DES")`
+   (line 866). Consequences: a configured `MinProtocol=TLSv1.3` is
+   lowered back to 1.2, and a configured TLS 1.2 `CipherString` is
+   replaced. Workaround in place: `tls_conf_commands()` in
+   `server/src/app.cpp` also emits `Protocol=-TLSv1.2`, which sets
+   `SSL_OP_NO_TLSv1_2`; the later min-version call does not clear
+   options, so the effective floor is 1.3. Verified by the raw-handshake
+   test. TLS 1.3 `Ciphersuites` are honoured because trantor never touches
+   them. The TLS 1.2 cipher list is trantor's constant and cannot be
+   configured without patching trantor. Proposal for Stage 5: a two-line
+   vcpkg overlay patch to trantor that applies the cipher list and minimum
+   version only when no configuration command set them. Until then the
+   handbook says: run at minimum 1.3 unless a client needs 1.2, in which
+   case the cipher list is trantor's.
+2. **Startup order.** Drogon runs beginning advices before listeners are
+   bound, and the IO loops bind asynchronously. The OIDC initialisation
+   retries connection-class failures for up to five seconds, then gives
+   up; any other failure is final. Worth knowing for Stage 5's health
+   checks.
+3. **jsoncpp stays confined.** `server/src/http/json_bridge.cpp` is the
+   only file naming `Json::Value`; the CI step "JSON boundary rule" fails
+   the build otherwise.
+4. **The vcpkg Drogon port auto-detects the C++ standard** and on MSVC's
+   default would build the library as C++17. The overlay triplets in
+   `cmake/triplets/` build every port as C++20 so the library and this
+   code agree.
+5. **Windows trust store.** trantor loads the Windows system certificate
+   store into OpenSSL for client connections (`loadWindowsSystemCert`),
+   so the JWKS fetch to Entra trusts what the machine trusts without a
+   bundled CA file. Linux uses OpenSSL's default paths. A production build
+   refuses `oidc.ca_bundle_pem` and any loopback or private issuer host.
+6. **Drogon's singleton dies at exit.** Calling `quit()` from a static
+   destructor crashes inside Drogon; tests stop the app explicitly. Stage
+   5's service wrapper must stop the app before `main` returns.
+
+## Is the C++ web stack comfortable to work in?
+
+Yes, with the reservations above. Coroutine handlers read as linear code
+and the validator's fetch-then-verify path is exactly the case you wanted
+them for. The costs are trantor's TLS policy overrides and the client-side
+per-connection context, both fixable with small patches under our
+control. Nothing here argues for changing course.
+
+## How to run against your certificate (point 1)
+
+1. Put the certificate chain and key on the host.
+2. Copy `config/archivum.example.json`, set `tls.certificate_pem`,
+   `tls.private_key_pem`, and the `oidc` block for a real tenant, or leave
+   the test issuer to the tests.
+3. `archivum serve --config <path>` and open `https://host:8443/healthz`.
+   The response includes `days_remaining` for the certificate.

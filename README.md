@@ -4,13 +4,16 @@ Storage engine, application server, and low-code SQL interface for the
 Punchline, Finalysis, and Synthex applications. One C++20 binary, one data
 directory, no external database.
 
-Status: **Stage 0** (CI and crash-injection harness). No engine pages, WAL,
-or b-tree code exists yet. See `docs/estimate-v2.md` for the staged plan.
+Status: **Stage 1** (Drogon spike: TLS, OIDC validation, saturation
+report). No engine pages, WAL, or b-tree code exists yet. See
+`docs/plan-v1.md` for the plan and `docs/stage1-report.md` for the gate.
 
 ## Build
 
-Requires CMake 3.22+, and MSVC 2022 (Windows) or GCC 12 (Linux). No
-third-party dependencies at this stage.
+Requires CMake 3.22+, MSVC 2022 (Windows) or GCC 12 (Linux), and vcpkg
+checked out at the commit in `vcpkg.json` with `VCPKG_ROOT` pointing at
+it. Dependencies (Drogon, OpenSSL, jwt-cpp, nlohmann-json) are built by
+the manifest on first configure.
 
 ```
 cmake --preset linux-debug          # or linux-release, or windows
@@ -23,6 +26,9 @@ ctest --preset linux-debug
 ## Layout
 
 ```
+server/            application server library and the archivum executable
+  include/archivum/server/  config.h oidc.h app.h
+  src/               config.cpp app.cpp main.cpp auth/oidc.cpp http/json_bridge.cpp
 engine/            storage engine library (archivum_engine)
   include/archivum/  status.h crc32c.h vfs.h journal.h
   src/               crc32c.cpp journal.cpp vfs_posix.cpp vfs_win32.cpp
@@ -31,6 +37,8 @@ tests/
   support/           minimal test framework (no dependency)
   unit/              per-component tests
   crash/             crash-injection tests (the Stage 0 gate)
+  server/            test PKI, test issuer, integration and saturation tests (Stage 1)
+config/            archivum.example.json
 docs/                design, formats, durability model, testing model
 .github/workflows/   CI: Windows (MSVC 2022) and Linux (Ubuntu 22.04, GCC 12)
 ```
@@ -49,3 +57,4 @@ docs/                design, formats, durability model, testing model
 - `docs/cpp-subset.md`: the C++20 subset this project uses.
 - `docs/json-boundary.md`: nlohmann/json inside, jsoncpp only at the HTTP edge.
 - `docs/toolchain.md`: pinned versions and what is not yet pinned.
+- `docs/stage1-report.md`: the Drogon spike gate, saturation numbers, and findings.

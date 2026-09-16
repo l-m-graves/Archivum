@@ -21,14 +21,16 @@ second opinion but is not a CI target.
 
 - Concepts on the typed API boundaries (`Db`, `ReadTxn`, `Table`, `Cursor`)
   once those exist. Constrain interfaces; do not build a concept hierarchy.
-- Drogon coroutines in route handlers, subject to the Stage 1 spike.
+- Drogon coroutines in route handlers. Confirmed in Stage 1: both routes
+  and the OIDC validator are coroutines and link on GCC and MSVC.
 
 ## Do not use
 
 - Modules.
 - Ranges, until the engine is solid.
-- `std::format`, pending the Stage 1 check of static-link and container
-  builds.
+- `std::format`. The Stage 1 configure check (`ARCHIVUM_HAS_STD_FORMAT`)
+  reports it available with GCC 13 and MSVC 2022 and absent with GCC 12,
+  the CI container and Linux deployment compiler. Not used.
 - Exceptions across the engine API. The engine returns `Status` and
   `Result<T>` (`engine/include/archivum/status.h`). Tests use a `REQUIRE`
   exception internally; that never crosses into engine code.

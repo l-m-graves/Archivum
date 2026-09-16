@@ -1,0 +1,13 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "archivum",
+  "version-string": "0.0.1",
+  "description": "Archivum storage engine, application server, and low-code SQL interface",
+  "builtin-baseline": "1577f17ee57f42a0ef6d75bbb82cb37d0b76d7e8",
+  "dependencies": [
+    { "name": "drogon", "default-features": false },
+    { "name": "jwt-cpp", "default-features": false },
+    "nlohmann-json",
+    "openssl"
+  ]
+}

@@ -11,7 +11,12 @@ Everything a build depends on, and whether it is pinned to an exact version.
 | Ninja | Linux only | distribution package |
 | Linux image | `container: ubuntu:22.04` | tag, not digest (see below) |
 | GitHub Actions | `actions/checkout@v4` | major tag, not commit SHA (see below) |
-| Third-party libraries | none at Stage 0 | vcpkg manifest with a pinned baseline arrives in Stage 1 |
+| vcpkg | `vcpkg.json` builtin-baseline and `vcpkg-configuration.json`; CI checks out `microsoft/vcpkg` at the same commit | `1577f17ee57f42a0ef6d75bbb82cb37d0b76d7e8` |
+| Drogon | vcpkg port at that baseline | 1.9.13 (port-version 2), trantor 1.5.28 |
+| jwt-cpp | vcpkg port, no default features (nlohmann traits) | 0.7.2 |
+| nlohmann-json | vcpkg port | 3.12.0 |
+| OpenSSL | vcpkg port, static | 3.6.4 |
+| Triplets | `cmake/triplets/x64-linux-cxx20.cmake`, `x64-windows-static-cxx20.cmake` | every port built as C++20; static CRT on Windows |
 
 ## Observed in CI run 1 (2026-09-15)
 
@@ -36,6 +41,18 @@ change.
   place. Every CI run prints the installed version so a regression can be
   correlated. A pin to a specific toolset would require installing the
   toolset in CI, which is Stage 1 work alongside vcpkg.
+
+## Local development in this session (not CI)
+
+The session's egress proxy denies GitHub archive downloads
+(codeload.github.com returns 403), which vcpkg needs for zlib, brotli,
+jsoncpp, trantor, drogon, and jwt-cpp. Local builds therefore use
+`CMakeUserPresets.json` (git-ignored) against Drogon 1.9.13 and jwt-cpp
+0.7.2 built from git clones at their release tags (commits
+4c5430757ea5451a7c38fbbef4b4bef7dbb47f2f and
+b0ea29a58fc852a67d4e896d266880c2c63b0c4c) with the distribution's OpenSSL
+3.0, jsoncpp, zlib, brotli, c-ares, and nlohmann-json. CI is the
+authoritative build.
 
 ## Local development
 
