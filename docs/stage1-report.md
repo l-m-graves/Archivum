@@ -92,6 +92,19 @@ load stopping, every time.
    port-version is bumped so the binary cache rebuilds. This is the CVE
    rebuild path in miniature: we now own a patch on a dependency, and the
    handbook must say so.
+1b. **Drogon drops per-listener SSL commands on Windows, and is patched.**
+   `ListenerManager::createListeners` has two branches: on platforms with
+   `SO_REUSEPORT` it merges the global and per-listener command lists; on
+   the other branch (Windows, a dedicated listening thread) it copies only
+   the global list. That is why CI run 8 negotiated TLS 1.2 and the default
+   cipher on Windows while Linux passed. The overlay port in
+   `cmake/vcpkg-overlay-ports/drogon/` carries
+   `0006-archivum-per-listener-ssl-conf-cmds.patch` (five lines against
+   drogon v1.9.13, commit 4c5430757ea5451a7c38fbbef4b4bef7dbb47f2f). The
+   server itself now sets its one policy through the global
+   `setSSLConfigCommands`, which works on both branches unpatched; the
+   tests keep a second listener with a different policy so the patched
+   path is exercised too.
 2. **Startup order.** Drogon runs beginning advices before listeners are
    bound, and the IO loops bind asynchronously. The OIDC initialisation
    retries connection-class failures for up to five seconds, then gives

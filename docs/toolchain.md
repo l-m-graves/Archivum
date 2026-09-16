@@ -17,6 +17,7 @@ Everything a build depends on, and whether it is pinned to an exact version.
 | nlohmann-json | vcpkg port | 3.12.0 |
 | OpenSSL | vcpkg port, static | 3.6.4 |
 | Triplets | `cmake/triplets/x64-linux-cxx20.cmake`, `x64-windows-static-cxx20.cmake` | every port built as C++20; static CRT on Windows |
+| Overlay port: drogon | `cmake/vcpkg-overlay-ports/drogon/`, the baseline port plus `0006-archivum-per-listener-ssl-conf-cmds.patch` | port-version 3; upstream v1.9.13, commit 4c5430757ea5451a7c38fbbef4b4bef7dbb47f2f, tarball SHA512 unchanged |
 | Overlay port: trantor | `cmake/vcpkg-overlay-ports/trantor/`, a copy of the baseline port plus `002-archivum-ssl-conf-commands-win.patch` (TLS defaults applied before configured commands) | port-version 1; upstream v1.5.28, commit 63a4e5e164e219dc3bf30cdbfa1462ae5602fa97, tarball SHA512 unchanged from the baseline port |
 
 ## Observed in CI run 1 (2026-09-15)

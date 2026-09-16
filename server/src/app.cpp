@@ -64,9 +64,12 @@ Status App::configure() {
   if (config_.io_threads != 0) app.setThreadNum(config_.io_threads);
   app.setIdleConnectionTimeout(60);
   app.setClientMaxBodySize(1024 * 1024);
-  app.addListener(config_.listen_address, config_.listen_port, /*useSSL=*/true,
-                  config_.tls.certificate_pem, config_.tls.private_key_pem, /*useOldTLS=*/false,
-                  tls_conf_commands(config_.tls));
+  // The TLS policy is set globally rather than per listener: unpatched
+  // Drogon 1.9.13 drops per-listener SSL commands on Windows (see
+  // docs/stage1-report.md), and the server has one policy anyway.
+  app.setSSLFiles(config_.tls.certificate_pem, config_.tls.private_key_pem);
+  app.setSSLConfigCommands(tls_conf_commands(config_.tls));
+  app.addListener(config_.listen_address, config_.listen_port, /*useSSL=*/true);
 
   auto validator = validator_;
   const CertificateInfo cert_info = cert_;
