@@ -37,7 +37,9 @@ std::string bearer(const std::string& token) { return "Bearer " + token; }
 
 // Raw OpenSSL handshake against a listener, bounded to [min,max] protocol
 // versions. Returns the negotiated version string, or empty on failure.
-std::string handshake(std::uint16_t port, int min_version, int max_version, const std::string& ca) {
+// `cipher_out`, when given, receives the negotiated cipher name.
+std::string handshake(std::uint16_t port, int min_version, int max_version, const std::string& ca,
+                      std::string* cipher_out = nullptr) {
   SSL_CTX* ctx = SSL_CTX_new(TLS_client_method());
   SSL_CTX_set_min_proto_version(ctx, min_version);
   SSL_CTX_set_max_proto_version(ctx, max_version);
@@ -53,6 +55,7 @@ std::string handshake(std::uint16_t port, int min_version, int max_version, cons
   std::string negotiated;
   if (BIO_do_connect(bio) > 0 && BIO_do_handshake(bio) > 0) {
     negotiated = SSL_get_version(ssl);
+    if (cipher_out != nullptr) *cipher_out = SSL_get_cipher_name(ssl);
     SSL_shutdown(ssl);
   }
   BIO_free_all(bio);
@@ -241,11 +244,15 @@ ARCHIVUM_TEST(tls_policy_min_version_is_enforced) {
   REQUIRE_OK(f.run_status);
   // The main listener is configured min 1.3.
   CHECK(handshake(f.ports.server, TLS1_3_VERSION, TLS1_3_VERSION, f.ca1_cert) == "TLSv1.3");
-  CHECK_MSG(handshake(f.ports.server, TLS1_2_VERSION, TLS1_2_VERSION, f.ca1_cert).empty(),
-            "TLS 1.2 must be refused by a min-1.3 listener");
+  const std::string v12 = handshake(f.ports.server, TLS1_2_VERSION, TLS1_2_VERSION, f.ca1_cert);
+  CHECK_MSG(v12.empty(), "TLS 1.2 must be refused by a min-1.3 listener; negotiated '" << v12 << "'");
   CHECK(handshake(f.ports.server, TLS1_1_VERSION, TLS1_1_VERSION, f.ca1_cert).empty());
-  // The 1.2-minimum listener accepts 1.2 and 1.3, refuses 1.1.
-  CHECK(handshake(f.ports.server_tls12, TLS1_2_VERSION, TLS1_2_VERSION, f.ca1_cert) == "TLSv1.2");
+  // The 1.2-minimum listener accepts 1.2 and 1.3, refuses 1.1, and its
+  // configured TLS 1.2 cipher list is what gets negotiated: this is the
+  // check that trantor's own cipher list no longer overrides configuration.
+  std::string cipher;
+  CHECK(handshake(f.ports.server_tls12, TLS1_2_VERSION, TLS1_2_VERSION, f.ca1_cert, &cipher) == "TLSv1.2");
+  CHECK_MSG(cipher == ServerFixture::kTls12Cipher, "negotiated cipher '" << cipher << "'");
   CHECK(handshake(f.ports.server_tls12, TLS1_3_VERSION, TLS1_3_VERSION, f.ca1_cert) == "TLSv1.3");
   CHECK(handshake(f.ports.server_tls12, TLS1_1_VERSION, TLS1_1_VERSION, f.ca1_cert).empty());
   // And a client that does not trust the server certificate fails.

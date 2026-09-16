@@ -1,0 +1,51 @@
+diff --git a/trantor/net/inner/tlsprovider/OpenSSLProvider.cc b/trantor/net/inner/tlsprovider/OpenSSLProvider.cc
+index 613b80a..4040503 100644
+--- a/trantor/net/inner/tlsprovider/OpenSSLProvider.cc
++++ b/trantor/net/inner/tlsprovider/OpenSSLProvider.cc
+@@ -187,10 +187,9 @@ struct SSLContext
+         SSL_CONF_CTX_set_flags(cctx, SSL_CONF_FLAG_CERTIFICATE);
+         SSL_CONF_CTX_set_flags(cctx, SSL_CONF_FLAG_FILE);
+         SSL_CONF_CTX_set_ssl_ctx(cctx, ctx_);
+-        for (const auto &cmd : sslConfCmds)
+-            SSL_CONF_cmd(cctx, cmd.first.data(), cmd.second.data());
+-        SSL_CONF_CTX_finish(cctx);
+-        SSL_CONF_CTX_free(cctx);
++        // Archivum: defaults first, configuration commands last, so that a
++        // configured MinProtocol or CipherString is honoured instead of
++        // being overwritten by the defaults below.
+         if (useOldTLS == false)
+         {
+ #if OPENSSL_VERSION_NUMBER >= 0x10101000L
+@@ -207,6 +206,18 @@ struct SSLContext
+                         "obsolete, insecure standards and should only be "
+                         "used for legacy purpose.";
+         }
++        // Disable weak ciphers. Weak hash and ciphers can die in a fire.
++        if (SSL_CTX_set_cipher_list(ctx_,
++                                    "MEDIUM:HIGH:!aNULL:!MD5:!RC4:!3DES") != 1)
++            throw std::runtime_error("Failed to select secure ciphers");
++        for (const auto &cmd : sslConfCmds)
++        {
++            if (SSL_CONF_cmd(cctx, cmd.first.data(), cmd.second.data()) <= 0)
++                LOG_ERROR << "SSL configuration command rejected: "
++                          << cmd.first << "=" << cmd.second;
++        }
++        SSL_CONF_CTX_finish(cctx);
++        SSL_CONF_CTX_free(cctx);
+ #endif
+     }
+     ~SSLContext()
+@@ -862,11 +873,7 @@ SSLContextPtr trantor::newSSLContext(const TLSPolicy &policy, bool isServer)
+         SSL_CTX_set_session_cache_mode(ctx->ctx(), SSL_SESS_CACHE_OFF);
+     }
+ 
+-    // Disable weak ciphers. Weak hash and ciphers can die in a fire.
+-    int status = SSL_CTX_set_cipher_list(ctx->ctx(),
+-                                         "MEDIUM:HIGH:!aNULL:!MD5:!RC4:!3DES");
+-    if (status != 1)
+-        throw std::runtime_error("Failed to select secure ciphers");
+-
++    // The default cipher list is applied in SSLContext's constructor, before
++    // the configuration commands, so that a configured CipherString wins.
+     return ctx;
+ }

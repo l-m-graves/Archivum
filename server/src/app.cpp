@@ -40,19 +40,13 @@ Result<CertificateInfo> read_certificate_info(const std::string& pem_path) {
 
 std::vector<std::pair<std::string, std::string>> tls_conf_commands(const TlsConfig& tls) {
   std::vector<std::pair<std::string, std::string>> cmds;
-  // trantor 1.5.28 calls SSL_CTX_set_min_proto_version(TLS1_2) after these
-  // commands, so "MinProtocol" alone cannot raise the floor to 1.3. The
-  // "Protocol" command sets SSL_OP_NO_TLSv1_2, which the later call does not
-  // clear, so the effective floor becomes 1.3. See docs/stage1-report.md.
-  if (tls.min_version == "1.3") {
-    cmds.emplace_back("MinProtocol", "TLSv1.3");
-    cmds.emplace_back("Protocol", "-TLSv1.2");
-  } else {
-    cmds.emplace_back("MinProtocol", "TLSv1.2");
-  }
+  // These are OpenSSL SSL_CONF commands. Unpatched trantor 1.5.28 applies
+  // its own minimum version and cipher list *after* them, which would
+  // silently discard MinProtocol and CipherString; the overlay port in
+  // cmake/vcpkg-overlay-ports/trantor applies trantor's defaults first so
+  // configuration wins. See docs/stage1-report.md.
+  cmds.emplace_back("MinProtocol", tls.min_version == "1.3" ? "TLSv1.3" : "TLSv1.2");
   if (!tls.ciphersuites_tls13.empty()) cmds.emplace_back("Ciphersuites", tls.ciphersuites_tls13);
-  // CipherString is applied but then overridden by trantor's own list; it is
-  // still passed so that a patched trantor honours it.
   if (!tls.ciphers_tls12.empty()) cmds.emplace_back("CipherString", tls.ciphers_tls12);
   return cmds;
 }

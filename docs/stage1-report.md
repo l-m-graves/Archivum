@@ -73,23 +73,25 @@ load stopping, every time.
 ## Findings that affect later stages
 
 1. **trantor overrides the TLS policy after applying configuration
-   commands.** `OpenSSLProvider.cc` in trantor 1.5.28 applies
-   `SSL_CONF_cmd` options, then unconditionally calls
-   `SSL_CTX_set_min_proto_version(TLS1_2)` (line 197) and
-   `SSL_CTX_set_cipher_list("MEDIUM:HIGH:!aNULL:!MD5:!RC4:!3DES")`
-   (line 866). Consequences: a configured `MinProtocol=TLSv1.3` is
-   lowered back to 1.2, and a configured TLS 1.2 `CipherString` is
-   replaced. Workaround in place: `tls_conf_commands()` in
-   `server/src/app.cpp` also emits `Protocol=-TLSv1.2`, which sets
-   `SSL_OP_NO_TLSv1_2`; the later min-version call does not clear
-   options, so the effective floor is 1.3. Verified by the raw-handshake
-   test. TLS 1.3 `Ciphersuites` are honoured because trantor never touches
-   them. The TLS 1.2 cipher list is trantor's constant and cannot be
-   configured without patching trantor. Proposal for Stage 5: a two-line
-   vcpkg overlay patch to trantor that applies the cipher list and minimum
-   version only when no configuration command set them. Until then the
-   handbook says: run at minimum 1.3 unless a client needs 1.2, in which
-   case the cipher list is trantor's.
+   commands, and is patched.** `OpenSSLProvider.cc` in trantor 1.5.28
+   applies `SSL_CONF_cmd` options, then unconditionally calls
+   `SSL_CTX_set_min_proto_version(TLS1_2)` and
+   `SSL_CTX_set_cipher_list("MEDIUM:HIGH:!aNULL:!MD5:!RC4:!3DES")`, so a
+   configured `MinProtocol` or `CipherString` was silently discarded. A
+   first workaround (`Protocol=-TLSv1.2`, a deprecated OpenSSL command)
+   held on Linux but not on Windows in CI run 7, so the root cause is
+   fixed instead: the vcpkg overlay port in
+   `cmake/vcpkg-overlay-ports/trantor/` carries
+   `002-archivum-ssl-conf-commands-win.patch`, which applies trantor's
+   defaults first and the configured commands last, and logs any command
+   OpenSSL rejects. `tls_policy_min_version_is_enforced` now asserts both
+   the 1.3 floor and that the configured TLS 1.2 cipher is the one
+   negotiated. The patch is 51 lines against trantor v1.5.28 (upstream
+   commit 63a4e5e164e219dc3bf30cdbfa1462ae5602fa97, the submodule of
+   drogon v1.9.13); the port's upstream tarball hash is unchanged and the
+   port-version is bumped so the binary cache rebuilds. This is the CVE
+   rebuild path in miniature: we now own a patch on a dependency, and the
+   handbook must say so.
 2. **Startup order.** Drogon runs beginning advices before listeners are
    bound, and the IO loops bind asynchronously. The OIDC initialisation
    retries connection-class failures for up to five seconds, then gives

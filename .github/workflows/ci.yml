@@ -48,7 +48,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /opt/vcpkg-cache
-          key: vcpkg-${{ runner.os }}-x64-linux-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/*') }}
+          key: vcpkg-${{ runner.os }}-x64-linux-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/*', 'cmake/vcpkg-overlay-ports/**') }}
       - name: JSON boundary rule (docs/json-boundary.md)
         run: |
           # jsoncpp may be named only in the bridge.
@@ -104,7 +104,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: C:\vcpkg-cache
-          key: vcpkg-${{ runner.os }}-x64-windows-static-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/*') }}
+          key: vcpkg-${{ runner.os }}-x64-windows-static-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/*', 'cmake/vcpkg-overlay-ports/**') }}
       - name: Configure
         run: cmake --preset windows
       - name: Save vcpkg binary cache

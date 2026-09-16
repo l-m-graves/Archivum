@@ -10,7 +10,8 @@
       "cacheVariables": {
         "VCPKG_INSTALLED_DIR": "${sourceDir}/build/vcpkg_installed",
         "VCPKG_MANIFEST_MODE": "ON",
-        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/triplets"
+        "VCPKG_OVERLAY_TRIPLETS": "${sourceDir}/cmake/triplets",
+        "VCPKG_OVERLAY_PORTS": "${sourceDir}/cmake/vcpkg-overlay-ports"
       }
     },
     {

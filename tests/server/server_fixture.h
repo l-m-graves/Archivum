@@ -39,6 +39,7 @@ inline Ports pick_ports() {
 
 class ServerFixture {
  public:
+  static constexpr const char* kTls12Cipher = "ECDHE-RSA-AES128-GCM-SHA256";
   ServerFixture() = default;
   ~ServerFixture() { stop(); }
 
@@ -89,6 +90,7 @@ class ServerFixture {
     // A TLS 1.2-minimum listener for protocol policy tests.
     archivum::server::TlsConfig tls12 = cfg.tls;
     tls12.min_version = "1.2";
+    tls12.ciphers_tls12 = kTls12Cipher;  // exactly one cipher, so the test can assert it
     d.addListener("127.0.0.1", ports.server_tls12, true, ca1_cert, ca1_key, false,
                   archivum::server::tls_conf_commands(tls12));
 
