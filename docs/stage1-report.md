@@ -1,8 +1,12 @@
 # Stage 1 report: the Drogon spike
 
 Gate from instructions v2, Q4, and rulings v3, section 6. Status per point
-below. Everything here was measured on the code in this commit; the
-Windows results are read from the CI run linked in `docs/toolchain.md`.
+below. CI run 9 (commit aa6c9df) is green on all four jobs:
+https://github.com/l-m-graves/Archivum/actions/runs/35133533348. Windows
+Debug and Release run the same eleven integration tests and the saturation
+test as Linux; CTest hides passing-test output, so the saturation numbers
+below are from Linux and the Windows numbers will be captured when the
+test is run with verbose output on a Windows host.
 
 ## Gate status
 
@@ -12,8 +16,8 @@ Windows results are read from the CI run linked in `docs/toolchain.md`.
 | 2 | `drogon::HttpClient` fetching the discovery document and JWKS over HTTPS | **Done.** Chain, expiry, and hostname verified; a fetch against an untrusted certificate, or with the wrong trust anchor, fails (test `jwks_fetch_fails_against_untrusted_certificate`). No libcurl, no WinHTTP |
 | 3 | Entra-shaped token validated with jwt-cpp end to end against the local test issuer | **Done.** RS256, `iss`, `aud`, `exp`, `nbf`, 120 s skew, `oid` and `tid` required; unknown `kid` triggers one rate-limited refresh; JWKS cached per `Cache-Control: max-age`; expired, future, wrong-audience, wrong-issuer, tampered, rogue-key, no-`oid`, no-`exp` tokens rejected |
 | 4 | Event-loop behaviour under a saturating client, reported not tuned | **Done.** Numbers and reading below |
-| + | Coroutine handlers link cleanly | **Done** on GCC 13 locally; both routes are `drogon::Task<HttpResponsePtr>` and the validator is a coroutine. CI confirms MSVC and GCC 12 |
-| + | `std::format` check | Available with GCC 13 and MSVC 2022. GCC 12 (the CI container and the Linux deployment target) reports at configure time; see the CI log line "std::format available". Recommendation stands: do not use it |
+| + | Coroutine handlers link cleanly | **Done.** Both routes are `drogon::Task<HttpResponsePtr>` and the validator is a coroutine; linked and tested on GCC 12 (CI), GCC 13 (local), and MSVC 19.44 (CI) |
+| + | `std::format` check | CI step "Feature probes": `ARCHIVUM_HAS_STD_FORMAT=1` on MSVC 19.44; absent on GCC 12 (the CI container and Linux deployment compiler). Not used |
 | + | vcpkg manifest with pinned baseline | **Done.** `vcpkg.json` builtin-baseline `1577f17ee57f42a0ef6d75bbb82cb37d0b76d7e8`; CI checks vcpkg out at that commit |
 
 ## What was built

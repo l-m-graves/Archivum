@@ -20,6 +20,15 @@ Everything a build depends on, and whether it is pinned to an exact version.
 | Overlay port: drogon | `cmake/vcpkg-overlay-ports/drogon/`, the baseline port plus `0006-archivum-per-listener-ssl-conf-cmds.patch` | port-version 3; upstream v1.9.13, commit 4c5430757ea5451a7c38fbbef4b4bef7dbb47f2f, tarball SHA512 unchanged |
 | Overlay port: trantor | `cmake/vcpkg-overlay-ports/trantor/`, a copy of the baseline port plus `002-archivum-ssl-conf-commands-win.patch` (TLS defaults applied before configured commands) | port-version 1; upstream v1.5.28, commit 63a4e5e164e219dc3bf30cdbfa1462ae5602fa97, tarball SHA512 unchanged from the baseline port |
 
+## Observed in CI run 9 (2026-09-16, first all-green run with dependencies)
+
+Same runner images as run 1. vcpkg built OpenSSL 3.6.4, Drogon 1.9.13
+(overlay port-version 3), trantor 1.5.28 (overlay port-version 1),
+jwt-cpp 0.7.2, nlohmann-json 3.12.0, jsoncpp, zlib, brotli, c-ares, and
+libuuid from the pinned baseline; a cold Windows dependency build took 13
+to 15 minutes, a warm one under 2. The binary cache is saved after
+configure even when the build fails.
+
 ## Observed in CI run 1 (2026-09-15)
 
 | Job | Versions printed |
