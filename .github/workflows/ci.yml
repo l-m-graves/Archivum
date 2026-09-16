@@ -44,10 +44,11 @@ jobs:
           git -C /opt/vcpkg checkout FETCH_HEAD
           /opt/vcpkg/bootstrap-vcpkg.sh -disableMetrics
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: /opt/vcpkg-cache
-          key: vcpkg-${{ runner.os }}-x64-linux-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: vcpkg-${{ runner.os }}-x64-linux-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/*') }}
       - name: JSON boundary rule (docs/json-boundary.md)
         run: |
           # jsoncpp may be named only in the bridge.
@@ -55,6 +56,12 @@ jobs:
             echo "jsoncpp used outside server/src/http/json_bridge.*"; exit 1; fi
       - name: Configure
         run: cmake --preset ${{ matrix.preset }}
+      - name: Save vcpkg binary cache
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: /opt/vcpkg-cache
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }}
       - name: Feature probes (docs/cpp-subset.md)
@@ -93,12 +100,19 @@ jobs:
           git -C C:\vcpkg-pinned checkout FETCH_HEAD
           & C:\vcpkg-pinned\bootstrap-vcpkg.bat -disableMetrics
       - name: Restore vcpkg binary cache
-        uses: actions/cache@v4
+        id: vcpkg-cache
+        uses: actions/cache/restore@v4
         with:
           path: C:\vcpkg-cache
-          key: vcpkg-${{ runner.os }}-x64-windows-static-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          key: vcpkg-${{ runner.os }}-x64-windows-static-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/*') }}
       - name: Configure
         run: cmake --preset windows
+      - name: Save vcpkg binary cache
+        if: always() && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: C:\vcpkg-cache
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
       - name: Build
         run: cmake --build --preset windows-${{ matrix.config }}
       - name: Feature probes (docs/cpp-subset.md)

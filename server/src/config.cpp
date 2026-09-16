@@ -45,7 +45,7 @@ Status get_req(const json& obj, const char* key, const char* where, std::string&
 
 bool starts_with(const std::string& s, const char* prefix) { return s.rfind(prefix, 0) == 0; }
 
-std::string host_of(const std::string& url) {
+[[maybe_unused]] std::string host_of(const std::string& url) {
   const auto scheme = url.find("://");
   if (scheme == std::string::npos) return "";
   const auto start = scheme + 3;
@@ -54,8 +54,8 @@ std::string host_of(const std::string& url) {
 }
 
 // A test issuer lives on a loopback or private address. Production builds
-// refuse it (instructions v2, Q1).
-bool is_local_or_private_host(const std::string& host) {
+// refuse it (instructions v2, Q1). Unused in a non-production build.
+[[maybe_unused]] bool is_local_or_private_host(const std::string& host) {
   if (host == "localhost" || host == "::1" || starts_with(host, "127.") || starts_with(host, "10.") ||
       starts_with(host, "192.168.") || starts_with(host, "169.254.")) {
     return true;
@@ -169,9 +169,6 @@ Result<Config> parse_config(const std::string& json_text) {
         is_local_or_private_host(host_of(c.oidc.issuer))) {
       return Status::invalid_argument("test issuer refused in a production build");
     }
-#else
-    (void)is_local_or_private_host;
-    (void)host_of;
 #endif
   }
 
