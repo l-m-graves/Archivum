@@ -32,9 +32,42 @@ Both claims are tested at every crash point under every persistence policy
 in `tests/crash/journal_crash_test.cpp`, and the harness is itself tested to
 catch a journal that skips fsync.
 
-## Engine (Stages 2 to 4, to be written)
+## Engine pager and log (Stage 2)
 
-The engine will make the same two-tier promise per transaction: durable with
-an honest fsync, consistent regardless. The defence against a lying fsync is
-operational, not algorithmic: log archiving to an off-host destination at a
-fixed cadence, mandatory for a healthy deployment (instructions v2, Q8).
+Per write transaction, with an honest fsync:
+
+- Every acknowledged commit is durable and visible after recovery, whole.
+- No transaction that was rolled back, or whose commit was never attempted,
+  is visible.
+- A commit that was in flight at the crash, or that returned an I/O error,
+  is in doubt: after recovery it is either fully present or fully absent,
+  never partial. Callers that need certainty retry idempotently.
+- Recovery is consistent: the data file plus the replayed log equal exactly
+  the state after some prefix of the acknowledged commits, followed at most
+  by one in-doubt commit.
+- A page is never served unless its checksum verifies; a log frame is never
+  replayed unless its chained checksum verifies.
+- Two instances on two files recover independently of each other.
+
+With a lying fsync:
+
+- Acknowledged commits may be lost.
+- A crash during checkpoint may leave the data file holding a mix of page
+  versions, because write ordering is exactly what the lying fsync fails to
+  provide. Every page still verifies individually, `Db::check()` reports
+  what it can detect (free-list inconsistencies, unreadable pages), and a
+  torn header that the log cannot repair is refused with `Corrupt` rather
+  than served. The remedy is restore from backup.
+- The defence is operational, not algorithmic: log archiving to an off-host
+  destination at a fixed cadence, mandatory for a healthy deployment
+  (instructions v2, Q8).
+
+Both tiers are tested at every crash point of a fixed workload under four
+persistence policies, and with seeded random faults, in
+`tests/crash/db_crash_test.cpp`.
+
+## Engine tooling (Stage 4, to be written)
+
+Backup, restore, log archive, and point-in-time recovery inherit the
+guarantees above and add the off-host copy that the lying-fsync tier
+depends on.

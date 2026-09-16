@@ -14,6 +14,9 @@ archivum_add_test(mem_vfs_test unit/mem_vfs_test.cpp)
 archivum_add_test(fault_vfs_test unit/fault_vfs_test.cpp)
 archivum_add_test(journal_test unit/journal_test.cpp)
 archivum_add_test(journal_crash_test crash/journal_crash_test.cpp)
+archivum_add_test(db_test unit/db_test.cpp)
+archivum_add_test(db_crash_test crash/db_crash_test.cpp)
+set_tests_properties(db_crash_test PROPERTIES TIMEOUT 900)
 
 # Server tests (Stage 1). Test-only issuer and PKI live here, never in the
 # shipped binary.

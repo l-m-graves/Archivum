@@ -1,9 +1,12 @@
-# archivum_engine: the storage engine. Stage 0 contains only the VFS boundary,
-# CRC32C, and the append-only journal. No pager, WAL, or b-tree code yet.
+# archivum_engine: the storage engine. Stage 2 adds the pager, the
+# write-ahead log, recovery, and page-level transactions (engine/).
 add_library(archivum_engine STATIC
   src/crc32c.cpp
   src/status.cpp
   src/journal.cpp
+  src/engine/page_format.cpp
+  src/engine/wal.cpp
+  src/engine/db.cpp
   $<IF:$<PLATFORM_ID:Windows>,src/vfs_win32.cpp,src/vfs_posix.cpp>
 )
 target_include_directories(archivum_engine PUBLIC include)

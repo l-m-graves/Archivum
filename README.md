@@ -4,9 +4,9 @@ Storage engine, application server, and low-code SQL interface for the
 Punchline, Finalysis, and Synthex applications. One C++20 binary, one data
 directory, no external database.
 
-Status: **Stage 1** (Drogon spike: TLS, OIDC validation, saturation
-report). No engine pages, WAL, or b-tree code exists yet. See
-`docs/plan-v1.md` for the plan and `docs/stage1-report.md` for the gate.
+Status: **Stage 2** (pager, write-ahead log, recovery, page-level
+transactions, two-instance design). No b-tree or catalog code yet. See
+`docs/plan-v1.md` for the plan and `docs/engine-design.md` for the engine.
 
 ## Build
 
@@ -30,8 +30,8 @@ server/            application server library and the archivum executable
   include/archivum/server/  config.h oidc.h app.h
   src/               config.cpp app.cpp main.cpp auth/oidc.cpp http/json_bridge.cpp
 engine/            storage engine library (archivum_engine)
-  include/archivum/  status.h crc32c.h vfs.h journal.h
-  src/               crc32c.cpp journal.cpp vfs_posix.cpp vfs_win32.cpp
+  include/archivum/  status.h crc32c.h vfs.h journal.h engine/db.h engine/page_format.h
+  src/               crc32c.cpp journal.cpp vfs_posix.cpp vfs_win32.cpp engine/{db,wal,page_format}.cpp
   testing/           test-only doubles: MemVfs, FaultVfs (the crash shim)
 tests/
   support/           minimal test framework (no dependency)
@@ -58,3 +58,5 @@ docs/                design, formats, durability model, testing model
 - `docs/json-boundary.md`: nlohmann/json inside, jsoncpp only at the HTTP edge.
 - `docs/toolchain.md`: pinned versions and what is not yet pinned.
 - `docs/stage1-report.md`: the Drogon spike gate, saturation numbers, and findings.
+- `docs/engine-design.md`: the pager and log design with its named invariants.
+- `docs/page-format.md`: on-disk formats of the database file and the log.

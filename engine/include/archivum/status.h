@@ -22,6 +22,7 @@ enum class ErrorCode : std::uint8_t {
   InvalidArgument,  // caller error
   Unsupported,      // not implemented on this platform or in this build
   Crashed,          // test-only: the simulated filesystem has crashed and handles are dead
+  Busy,             // the operation cannot proceed now (e.g. checkpoint with active readers)
 };
 
 std::string_view to_string(ErrorCode code);
@@ -46,6 +47,7 @@ class [[nodiscard]] Status {
     return Status(ErrorCode::Unsupported, std::move(message));
   }
   static Status crashed(std::string message) { return Status(ErrorCode::Crashed, std::move(message)); }
+  static Status busy(std::string message) { return Status(ErrorCode::Busy, std::move(message)); }
 
   bool ok() const { return code_ == ErrorCode::Ok; }
   ErrorCode code() const { return code_; }

@@ -1,0 +1,105 @@
+# Engine design (Stage 2: pager, log, transactions)
+
+Public API: `engine/include/archivum/engine/db.h`. Formats:
+`docs/page-format.md`. Guarantees: `docs/durability.md`.
+
+## Model
+
+The SQLite WAL model, in process. Every write goes to the log as a full
+page image. The data file is written only by checkpoint. One writer at a
+time; readers take a snapshot of the committed state and are never blocked
+by the writer, and never block it. Because this process is the only one
+that opens the files, the log index lives in memory and is rebuilt from the
+log at open.
+
+## Named invariants
+
+**I1. `Db` is an instance; there is no global state.** A `Db` owns its
+file handle, log, index, page cache, reader count, writer lock, and
+checkpoint counter. Two instances on two files share nothing. The two-
+database design (operational and analytical stores, pipeline document
+section 2) is this invariant. Tested by `db_two_instances_are_independent`
+(a writer on one does not block a writer on the other; a reader on one
+does not block a checkpoint on the other) and by
+`db_two_instances_crash_at_every_step`, which interleaves transactions on
+two instances over one crash shim, crashes at every operation under every
+persistence policy, and checks that each instance recovers to exactly its
+own committed state.
+
+**I2. A transaction never spans instances.** `WriteTxn` is created by one
+`Db` and holds only that instance's writer lock; no API takes two
+databases. Consistency between the stores is the change feed's job, and
+is eventual by design.
+
+**I3. Committed means synced.** `WriteTxn::commit()` returns ok only after
+the log write and the log sync succeed. Until then nothing is visible to
+readers and nothing is in the index.
+
+**I4. Readers see one snapshot.** A `ReadTxn` records the last committed
+frame at begin and resolves every page against it: the latest frame at or
+before the snapshot, else the data file. A checkpoint cannot run while any
+reader exists (`Busy`), so the data file never changes under a snapshot.
+
+**I5. Nothing corrupt is served.** Every page read from the data file or
+the log is verified against its trailer, and every log frame against the
+chained checksum; a failure is `Corrupt`, never data.
+
+**I6. Fail closed after log I/O errors.** After any I/O error while
+appending, discarding, or resetting the log, the instance refuses further
+writes until reopened. Reopen re-reads the truth from disk. This mirrors
+the journal's policy and the reason is the same: after a failed fsync the
+OS may have dropped dirty pages.
+
+**I7. Open is a durability barrier.** `Db::open` syncs the data file and
+its directory after validating the header, and the log does the same after
+recovery. Found by the randomized crash test: a failed sync during
+creation, followed by a retry that trusted the cached header, let commits
+be acknowledged on top of a file that was not on disk; a crash then lost
+the file and open discarded the log as belonging to nothing.
+
+## Transaction lifecycle
+
+```
+begin_write  lock writer; snapshot = last commit; header = committed page 0
+write_page   copy into the private dirty set
+allocate     pop free list (page content must decode as a free page) or grow
+free_page    write a free-page record linking to the old head
+commit       seal dirty pages; page 0 with the new header is the commit
+             frame; one write, one sync; publish; maybe checkpoint
+rollback     drop the dirty set
+```
+
+An in-flight commit at crash time, or a commit that returned an I/O error,
+is in doubt: after recovery it is either fully present or fully absent,
+never partial. Callers that must know use idempotent operations and check;
+Punchline's client-generated UUIDs are that mechanism.
+
+## Checkpoint
+
+Holds the writer lock, requires zero readers. Copies the latest committed
+frame of every page into the data file, truncates the file to the
+committed page count, syncs the file, then resets the log. A crash at any
+point is safe: before the file sync the log still has everything; after it
+the file has everything; the reset happens last. Page 0 in the data file
+may be torn by a crash mid-checkpoint; `Db::open` recovers it from the log,
+which is identified by its own header.
+
+Automatic checkpoints run after a commit when the log holds at least
+`checkpoint_threshold_frames` frames and no reader is active.
+
+## Testing
+
+- `tests/unit/db_test.cpp`: API behaviour, snapshot isolation, free list
+  reuse, corruption detection, torn log tail, foreign log, auto
+  checkpoint, two instances.
+- `tests/crash/db_crash_test.cpp`: model-based (a naive map of page
+  contents, the free set, and the page count), crash at every operation of
+  a fixed workload under every persistence policy, the lying-fsync tier,
+  the two-instance test, and seeded randomized runs with random faults of
+  every kind.
+
+## Deferred to Stage 3
+
+B-trees, records and types, catalog, constraints, the typed API,
+concurrent (multi-threaded) readers with the timeout-versus-checkpoint
+test, dump and reload, and the invariant checker beyond the free list.

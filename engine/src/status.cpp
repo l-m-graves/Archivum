@@ -20,6 +20,8 @@ std::string_view to_string(ErrorCode code) {
       return "unsupported";
     case ErrorCode::Crashed:
       return "crashed";
+    case ErrorCode::Busy:
+      return "busy";
   }
   return "unknown";
 }
