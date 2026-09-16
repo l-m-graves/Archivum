@@ -1,6 +1,9 @@
 # C++20 subset
 
-Language standard: C++20 (`CMAKE_CXX_STANDARD 20`, extensions off).
+Language standard: C++20 (`CMAKE_CXX_STANDARD 20`, extensions off), set
+explicitly in the top-level `CMakeLists.txt` and inherited by every preset.
+Stage 0 was written on this standard; see `docs/plan-v1.md` section 0 for
+the evidence.
 Compilers: MSVC 2022 on Windows, GCC 12 on Linux. Clang is used locally for a
 second opinion but is not a CI target.
 
