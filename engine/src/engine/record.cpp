@@ -1,6 +1,8 @@
 #include "archivum/engine/record.h"
 
 #include <cstring>
+#include <array>
+#include <cstddef>
 
 #include "archivum/engine/page_format.h"
 

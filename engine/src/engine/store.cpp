@@ -1,6 +1,8 @@
 #include "archivum/engine/store.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <optional>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>

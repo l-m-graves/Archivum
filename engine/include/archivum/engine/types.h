@@ -10,6 +10,8 @@
 #pragma once
 
 #include <array>
+#include <cstddef>
+#include <string_view>
 #include <cstdint>
 #include <string>
 #include <vector>

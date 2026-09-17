@@ -1,6 +1,7 @@
 #include "archivum/engine/record.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <cstring>
 
 #include "test.h"

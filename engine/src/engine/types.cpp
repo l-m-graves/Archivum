@@ -1,6 +1,8 @@
 #include "archivum/engine/types.h"
 
 #include <cstring>
+#include <algorithm>
+#include <cstddef>
 
 namespace archivum::engine {
 

@@ -1,6 +1,8 @@
 #include "archivum/engine/store.h"
 
 #include <thread>
+#include <atomic>
+#include <optional>
 
 #include "archivum/testing/mem_vfs.h"
 #include "test.h"

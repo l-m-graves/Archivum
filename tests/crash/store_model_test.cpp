@@ -10,6 +10,10 @@
 // points, the store is reopened and compared with the committed model, an
 // in-flight commit being accepted as either wholly present or absent.
 #include <algorithm>
+#include <cstdio>
+#include <optional>
+#include <vector>
+#include <string>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>

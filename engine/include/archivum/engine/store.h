@@ -27,6 +27,8 @@
 #pragma once
 
 #include <functional>
+#include <cstdint>
+#include <string_view>
 #include <map>
 #include <memory>
 #include <mutex>

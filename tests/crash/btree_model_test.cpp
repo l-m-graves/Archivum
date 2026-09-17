@@ -4,6 +4,8 @@
 // invariants checked after every operation. Runs over the crash shim so
 // that crashes at random points are recovered and compared as well.
 #include <chrono>
+#include <cstdio>
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <map>
