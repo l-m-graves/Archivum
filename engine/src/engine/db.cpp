@@ -337,15 +337,22 @@ Result<DbHeader> Db::committed_header(FrameNo snapshot) {
 Result<std::unique_ptr<ReadTxn>> Db::begin_read() {
   FrameNo snapshot = 0;
   {
+    // The reader is registered in the same critical section that takes
+    // its snapshot. Registering after reading the header left a window in
+    // which a commit and its automatic checkpoint could empty the log the
+    // snapshot's frame numbers refer to; the reader would then have read
+    // newer pages from the file, or other transactions' frames under the
+    // old numbers. Found by the backup test: a backup taken in that
+    // window failed its integrity check.
     std::lock_guard<std::mutex> lock(impl_->state_mu);
     if (impl_->closed) return Status::io("database closed");
     snapshot = impl_->wal->last_commit();
+    ++impl_->active_readers;
   }
   auto header = committed_header(snapshot);
-  if (!header.ok()) return header.status();
-  {
-    std::lock_guard<std::mutex> lock(impl_->state_mu);
-    ++impl_->active_readers;
+  if (!header.ok()) {
+    reader_ended();
+    return header.status();
   }
   return std::unique_ptr<ReadTxn>(
       new ReadTxn(*this, snapshot, header.value().page_count, header.value().change_counter));

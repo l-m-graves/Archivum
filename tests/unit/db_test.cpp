@@ -1,6 +1,8 @@
 #include "archivum/engine/db.h"
 
+#include <atomic>
 #include <cstring>
+#include <thread>
 #include <vector>
 
 #include "archivum/testing/mem_vfs.h"
@@ -368,4 +370,81 @@ ARCHIVUM_TEST(db_two_instances_are_independent) {
   ra.value().reset();
   REQUIRE_OK(a.value()->checkpoint());
   CHECK(b.value()->checkpoint().code() == ErrorCode::Busy);
+}
+
+// A reader's snapshot must be registered atomically with its capture:
+// with a checkpoint after nearly every commit, every snapshot's page 0
+// must be the header of the change counter the transaction reports, and
+// every page it reads must be the one that commit wrote. Registering
+// after the header read let a commit plus checkpoint empty the log under
+// a snapshot (found by the Stage 4 backup test).
+ARCHIVUM_TEST(db_reader_registration_is_atomic_with_its_snapshot) {
+  MemVfs vfs;
+  DbOptions o;
+  o.page_size = 512;
+  o.cache_pages = 4;
+  o.checkpoint_threshold_frames = 2;
+  auto db_r = Db::open(vfs, "r/atomic.db", o);
+  REQUIRE_OK(db_r.status());
+  Db& db = *db_r.value();
+  {
+    auto w = db.begin_write();
+    REQUIRE_OK(w.status());
+    for (int i = 0; i < 3; ++i) {
+      auto p = w.value()->allocate_page();
+      REQUIRE_OK(p.status());
+      REQUIRE_OK(w.value()->write_page(p.value(), pattern(512, 0)));
+    }
+    REQUIRE_OK(w.value()->commit());
+  }
+  std::atomic<bool> stop{false};
+  std::atomic<int> bad{0};
+  std::atomic<int> reads{0};
+  std::thread writer([&] {
+    for (std::uint8_t seed = 1; !stop.load(); ++seed) {
+      auto w = db.begin_write();
+      if (!w.ok()) return;
+      // Every commit rewrites pages 1..3 with the same seed, so a
+      // consistent snapshot sees one seed on all three.
+      for (PageNo p = 1; p <= 3; ++p) {
+        if (!w.value()->write_page(p, pattern(512, seed)).ok()) return;
+      }
+      if (!w.value()->commit().ok()) return;
+      // Busy while a reader is registered; the race is a reader that is
+      // not yet registered when this runs.
+      (void)db.checkpoint();
+    }
+  });
+  std::vector<std::thread> readers;
+  for (int t = 0; t < 4; ++t) {
+    readers.emplace_back([&] {
+      std::vector<std::byte> page(512), first(512);
+      for (int i = 0; i < 1500; ++i) {
+        std::this_thread::yield();
+        auto r = db.begin_read();
+        if (!r.ok()) {
+          bad.fetch_add(1);
+          return;
+        }
+        if (!r.value()->read_page(0, page).ok()) {
+          bad.fetch_add(1);
+          continue;
+        }
+        auto hdr = DbHeader::decode(page);
+        if (!hdr.ok() || hdr.value().change_counter != r.value()->change_counter()) bad.fetch_add(1);
+        bool ok = r.value()->read_page(1, first).ok();
+        for (PageNo p = 2; p <= 3 && ok; ++p) {
+          ok = r.value()->read_page(p, page).ok() && body_equal(page, first);
+        }
+        if (!ok) bad.fetch_add(1);
+        reads.fetch_add(1);
+      }
+    });
+  }
+  for (auto& t : readers) t.join();
+  stop.store(true);
+  writer.join();
+  CHECK(reads.load() == 6000);
+  CHECK_MSG(bad.load() == 0, bad.load() << " inconsistent snapshots");
+  CHECK_MSG(db.stats().checkpoints > 0, "no checkpoint ran during the reads");
 }

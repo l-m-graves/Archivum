@@ -41,6 +41,10 @@ readers and nothing is in the index.
 frame at begin and resolves every page against it: the latest frame at or
 before the snapshot, else the data file. A checkpoint cannot run while any
 reader exists (`Busy`), so the data file never changes under a snapshot.
+The reader is registered in the same critical section that takes its
+snapshot; registering afterwards left a window for a checkpoint (found in
+Stage 4 by the backup test, regression-tested by
+`db_reader_registration_is_atomic_with_its_snapshot`).
 
 **I5. Nothing corrupt is served.** Every page read from the data file or
 the log is verified against its trailer, and every log frame against the
