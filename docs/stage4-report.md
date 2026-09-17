@@ -3,7 +3,11 @@
 Scope from `docs/plan-v1.md` (Stage 4): integrity check, restore, online
 backup, log archive, point-in-time recovery, restore-and-verify in CI.
 Pulled forward from Stage 5 at your request: the migration framework, with
-the Punchline schema as the first migration. CI run `[CI-RUN]`.
+the Punchline schema as the first migration. CI: run 17 (commit c03ed3a, Stage 4) and
+run 18 (commit f2111e0, the pager fix below) are green on all four jobs,
+19 tests each: https://github.com/l-m-graves/Archivum/actions/runs/35263830453
+and https://github.com/l-m-graves/Archivum/actions/runs/35265194271 (in progress at the
+time of this commit; confirmed in the next).
 
 A correction first. The Stage 3 report's closing section said Stage 4
 was SQL and the change feed. It is not: the accepted plan puts SQL in
@@ -36,21 +40,30 @@ migration is then rerun and the result compared with a reference dump.
 
 | Configuration | Crash points | Result |
 |---|---|---|
-| Linux Debug, ASan+UBSan, local | 588 | green |
-| Linux Release, local | `[REL-CRASH]` | green |
-| CI, four jobs | `[CI]` | `[CI]` |
+| Linux Debug, ASan+UBSan, local | 588 | green, 16.9 s |
+| Linux Release, local | 588 | green, 0.9 s |
+| CI Linux Debug / Release | 588 / 588 | green, 17.3 s / 1.0 s |
+| CI Windows Debug / Release (MSVC 19.44) | 588 / 588 | green, 12.7 s / 1.2 s |
+
+The crash-point count is the same everywhere because the migration
+issues the same VFS operations on every platform: 147 per persistence
+policy, four policies.
 
 ## Figures
 
-| Test | Linux Debug (ASan+UBSan) | Linux Release |
-|---|---|---|
-| migrate_test | `[T]` | `[T]` |
-| backup_test | 1.6 s | `[T]` |
-| punchline_migration_test | `[T]` | `[T]` |
-| cli_test | 0.7 s | `[T]` |
+CI run 17, seconds:
 
-Whole engine suite, Debug at 1000 iterations: 17 tests green. Release at
-10000 iterations: green.
+| Test | Linux Debug (ASan+UBSan) | Linux Release | Windows Debug | Windows Release |
+|---|---|---|---|---|
+| migrate_test | 0.03 | 0.00 | 0.01 | 0.01 |
+| backup_test | 1.81 | 0.08 | 1.13 | 0.11 |
+| punchline_migration_test | 17.29 | 0.96 | 12.66 | 1.24 |
+| cli_test | 0.75 | 0.11 | 0.38 | 0.28 |
+| whole suite (19 tests) | 83.1 | 29.4 | 58.2 | 40.8 |
+
+Locally, the Release engine suite at 10,000 randomized iterations is
+green (22 s) and the backup test was run 20 further times in Release
+after the pager fix without a failure.
 
 ## What the tests found
 
