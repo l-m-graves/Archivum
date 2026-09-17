@@ -3,8 +3,8 @@
 Scope from `docs/plan-v1.md` (Stage 3): b-trees, records and types,
 catalog, constraints, typed API, snapshot readers; model-based tests,
 invariant checker, dump and reload round trip; the timeout-versus-
-checkpoint test. CI run: 14 (commit 27d2ddb), in progress at the time of
-writing; the CI rows below are filled in when it completes.
+checkpoint test. CI run 14 (commit 27d2ddb) is green on all four jobs,
+15 tests each: https://github.com/l-m-graves/Archivum/actions/runs/35256112970.
 
 ## Gate status
 
@@ -61,13 +61,16 @@ Runs:
 |---|---|---|
 | Linux Debug, ASan+UBSan, local, seeds 1000 to 1029 and 2000 to 2029 | 60 | green |
 | Linux Release, local, seeds 5000 to 6999 | 2,000 | green |
-| CI Linux Debug (ASan+UBSan), `ARCHIVUM_CRASH_ITERS=1000` | 20 | `[CI]` |
-| CI Linux Release, `ARCHIVUM_CRASH_ITERS=10000` | 200 | `[CI]` |
-| CI Windows Debug / Release (MSVC 19.44) | 20 / 200 | `[CI]` |
+| CI Linux Debug (ASan+UBSan), `ARCHIVUM_CRASH_ITERS=1000` | 20 | green, 34.5 s |
+| CI Linux Release, `ARCHIVUM_CRASH_ITERS=10000` | 200 | green, 11.4 s |
+| CI Windows Debug (MSVC 19.44), 1000 | 20 | green, 28.3 s |
+| CI Windows Release (MSVC 19.44), 10000 | 200 | green, 20.6 s |
 
 An iteration is four rounds of up to 25 transactions with a crash per
 round. `btree_model_test` (the byte-string tree against `std::map`) ran
-60 sanitized iterations locally and runs at the same CI counts. The base
+60 sanitized iterations locally and 25 (Debug) or 250 (Release)
+iterations per CI job, 4.7 to 9.8 s. Whole suites: Linux Debug 59 s,
+Linux Release 24 s, Windows Debug 54 s, Windows Release 39 s. The base
 seed is printed by every run and `ARCHIVUM_SEED` reproduces it.
 
 ## What the tests found
