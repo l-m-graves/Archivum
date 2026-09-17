@@ -6,8 +6,7 @@ Pulled forward from Stage 5 at your request: the migration framework, with
 the Punchline schema as the first migration. CI: run 17 (commit c03ed3a, Stage 4) and
 run 18 (commit f2111e0, the pager fix below) are green on all four jobs,
 19 tests each: https://github.com/l-m-graves/Archivum/actions/runs/35263830453
-and https://github.com/l-m-graves/Archivum/actions/runs/35265194271 (in progress at the
-time of this commit; confirmed in the next).
+and https://github.com/l-m-graves/Archivum/actions/runs/35265194271.
 
 A correction first. The Stage 3 report's closing section said Stage 4
 was SQL and the change feed. It is not: the accepted plan puts SQL in
