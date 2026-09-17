@@ -23,6 +23,7 @@ enum class ErrorCode : std::uint8_t {
   Unsupported,      // not implemented on this platform or in this build
   Crashed,          // test-only: the simulated filesystem has crashed and handles are dead
   Busy,             // the operation cannot proceed now (e.g. checkpoint with active readers)
+  Constraint,       // a schema constraint rejected the change; message names it
 };
 
 std::string_view to_string(ErrorCode code);
@@ -48,6 +49,9 @@ class [[nodiscard]] Status {
   }
   static Status crashed(std::string message) { return Status(ErrorCode::Crashed, std::move(message)); }
   static Status busy(std::string message) { return Status(ErrorCode::Busy, std::move(message)); }
+  static Status constraint(std::string message) {
+    return Status(ErrorCode::Constraint, std::move(message));
+  }
 
   bool ok() const { return code_ == ErrorCode::Ok; }
   ErrorCode code() const { return code_; }

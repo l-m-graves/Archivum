@@ -16,6 +16,10 @@ archivum_add_test(journal_test unit/journal_test.cpp)
 archivum_add_test(journal_crash_test crash/journal_crash_test.cpp)
 archivum_add_test(db_test unit/db_test.cpp)
 archivum_add_test(db_crash_test crash/db_crash_test.cpp)
+archivum_add_test(btree_test unit/btree_test.cpp)
+archivum_add_test(record_test unit/record_test.cpp)
+archivum_add_test(btree_model_test crash/btree_model_test.cpp)
+set_tests_properties(btree_model_test PROPERTIES TIMEOUT 900)
 set_tests_properties(db_crash_test PROPERTIES TIMEOUT 900)
 
 # Server tests (Stage 1). Test-only issuer and PKI live here, never in the

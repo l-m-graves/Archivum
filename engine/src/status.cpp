@@ -22,6 +22,8 @@ std::string_view to_string(ErrorCode code) {
       return "crashed";
     case ErrorCode::Busy:
       return "busy";
+    case ErrorCode::Constraint:
+      return "constraint";
   }
   return "unknown";
 }

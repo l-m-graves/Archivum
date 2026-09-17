@@ -7,6 +7,9 @@ add_library(archivum_engine STATIC
   src/engine/page_format.cpp
   src/engine/wal.cpp
   src/engine/db.cpp
+  src/engine/btree.cpp
+  src/engine/types.cpp
+  src/engine/record.cpp
   $<IF:$<PLATFORM_ID:Windows>,src/vfs_win32.cpp,src/vfs_posix.cpp>
 )
 target_include_directories(archivum_engine PUBLIC include)
