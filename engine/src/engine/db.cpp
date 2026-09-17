@@ -406,6 +406,7 @@ Result<CheckReport> Db::check() {
           break;
         }
         ++report.free_pages_walked;
+        report.free_pages.push_back(cur);
         cur = fp.value().next;
       }
       if (report.free_pages_walked != hdr.value().freelist_count) {

@@ -4,9 +4,10 @@ Storage engine, application server, and low-code SQL interface for the
 Punchline, Finalysis, and Synthex applications. One C++20 binary, one data
 directory, no external database.
 
-Status: **Stage 2** (pager, write-ahead log, recovery, page-level
-transactions, two-instance design). No b-tree or catalog code yet. See
-`docs/plan-v1.md` for the plan and `docs/engine-design.md` for the engine.
+Status: **Stage 3** (b-trees, typed records, catalog, constraints, typed
+API with secondary indexes, model-based tests, invariant checker, dump
+and restore). No SQL yet. See `docs/plan-v1.md` for the plan and
+`docs/engine-design.md` for the engine.
 
 ## Build
 
@@ -30,8 +31,9 @@ server/            application server library and the archivum executable
   include/archivum/server/  config.h oidc.h app.h
   src/               config.cpp app.cpp main.cpp auth/oidc.cpp http/json_bridge.cpp
 engine/            storage engine library (archivum_engine)
-  include/archivum/  status.h crc32c.h vfs.h journal.h engine/db.h engine/page_format.h
-  src/               crc32c.cpp journal.cpp vfs_posix.cpp vfs_win32.cpp engine/{db,wal,page_format}.cpp
+  include/archivum/  status.h crc32c.h vfs.h journal.h engine/{db,page_format,btree,types,record,store}.h
+  src/               crc32c.cpp journal.cpp vfs_posix.cpp vfs_win32.cpp
+                     engine/{db,wal,page_format,btree,types,record,store}.cpp
   testing/           test-only doubles: MemVfs, FaultVfs (the crash shim)
 tests/
   support/           minimal test framework (no dependency)
@@ -60,3 +62,6 @@ docs/                design, formats, durability model, testing model
 - `docs/stage1-report.md`: the Drogon spike gate, saturation numbers, and findings.
 - `docs/engine-design.md`: the pager and log design with its named invariants.
 - `docs/page-format.md`: on-disk formats of the database file and the log.
+- `docs/btree-format.md`: node, cell and overflow layout of the b-tree, its split and erase rules.
+- `docs/store-format.md`: types, order-preserving key encoding, row encoding, catalog, indexes, constraints.
+- `docs/stage3-report.md`: the Stage 3 gate, test figures and findings.

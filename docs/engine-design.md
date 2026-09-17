@@ -1,7 +1,9 @@
-# Engine design (Stage 2: pager, log, transactions)
+# Engine design
 
-Public API: `engine/include/archivum/engine/db.h`. Formats:
-`docs/page-format.md`. Guarantees: `docs/durability.md`.
+Stage 2: pager, log, transactions (`engine/include/archivum/engine/db.h`,
+`docs/page-format.md`, `docs/durability.md`). Stage 3: b-trees, records,
+catalog, constraints and the typed API (`btree.h`, `record.h`, `types.h`,
+`store.h`; `docs/btree-format.md`, `docs/store-format.md`).
 
 ## Model
 
@@ -98,8 +100,72 @@ Automatic checkpoints run after a commit when the log holds at least
   the two-instance test, and seeded randomized runs with random faults of
   every kind.
 
-## Deferred to Stage 3
+## Stage 3: the typed layer
 
-B-trees, records and types, catalog, constraints, the typed API,
-concurrent (multi-threaded) readers with the timeout-versus-checkpoint
-test, dump and reload, and the invariant checker beyond the free list.
+```
+Store        one Db; the catalog b-tree at page 1; a catalog cache per change counter
+Reader       a ReadTxn plus the catalog of its snapshot: get, scan, count
+Writer       the WriteTxn plus a private copy of the catalog: insert, update,
+             remove, create/drop table and index, schema version; commit
+BTree        ordered byte-string map over PageReader/PageWriter (a ReadTxn or WriteTxn)
+```
+
+Additional invariants, all checked by `Store::check`:
+
+**I8. Every row's key is its primary key.** The key of a table entry
+decodes to the primary key columns of the row stored under it.
+
+**I9. Indexes and rows agree both ways.** For every row and every index
+of its table the index entry computed from the row exists; for every
+index entry the row it names exists and yields exactly that entry; entry
+counts equal row counts; a unique index has no two entries with the same
+non-NULL prefix.
+
+**I10. Constraints hold at rest.** Every stored row satisfies its
+column types, NOT NULL and checks, and every non-NULL foreign key finds
+its parent.
+
+**I11. Pages are owned exactly once.** The catalog tree, every table
+tree, every index tree (overflow pages included) and the free list
+partition pages 1 to N−1; no page is owned twice and none by nobody.
+
+**I12. A constraint violation changes nothing.** `Writer` validates the
+row, looks up the primary key, unique indexes and parents, and only then
+writes. Only an I/O error can leave a transaction half applied, and such
+a transaction must be rolled back (I6 makes the log refuse further
+writes anyway).
+
+**I13. The catalog is part of the snapshot.** A reader's catalog is the
+one committed at its change counter; a writer's schema changes are
+visible to itself and to nobody else until commit.
+
+## Testing (Stage 3)
+
+- `tests/unit/btree_test.cpp`, `tests/crash/btree_model_test.cpp`:
+  the tree against `std::map<Bytes, Bytes>` with random puts, replaces,
+  erases, point lookups, forward and backward scans, crashes at random
+  points with in-doubt commits accepted either way, and the structural
+  checker after every operation.
+- `tests/unit/record_test.cpp`: key order across the sign boundary,
+  prefixes, embedded NULs, composites; row round trip and truncation.
+- `tests/unit/store_test.cpp`: schema and rows with every constraint
+  exercised; a migration rolled back and committed; dump and restore
+  round trip; four snapshot readers against a committing writer while a
+  long query holds its snapshot and the checkpoint reports Busy until it
+  ends.
+- `tests/crash/store_model_test.cpp`: the typed model-based test. Three
+  tables (self-consistent schema with composite keys, a unique-index
+  foreign key target, a two-column foreign key, checks of every kind and
+  every column type) against a naive model of rows per table. Random
+  inserts, updates and deletes with deliberate violations whose verdict
+  the model computes independently, random index creation and removal,
+  rollbacks, checkpoints, and crashes at random points. After every commit
+  the tables are compared by primary key, every index in index order,
+  random bounded scans in both directions and point lookups; the full
+  invariant checker runs every few commits and after every recovery.
+
+## Deferred to Stage 4
+
+SQL over the typed API (parser, planner, the read-only engine), and the
+change feed. The typed API is what the SQL layer compiles to; nothing in
+Stage 4 touches pages.

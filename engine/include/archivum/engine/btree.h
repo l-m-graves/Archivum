@@ -93,6 +93,7 @@ class BTree {
 
   PageNo root() const { return root_; }
   std::uint32_t max_key_bytes() const;
+  static std::uint32_t max_key_bytes_for(std::uint32_t page_size);
 
   Result<std::optional<Bytes>> get(std::span<const std::byte> key);
   // Inserts or replaces.

@@ -56,6 +56,7 @@ struct CheckReport {
   std::vector<std::string> problems;
   std::uint64_t pages_checked = 0;
   std::uint64_t free_pages_walked = 0;
+  std::vector<PageNo> free_pages;  // the free list in walk order, for ownership cross-checks
 };
 
 class Db;
@@ -97,6 +98,9 @@ class WriteTxn {
   Result<PageNo> allocate_page();
   Status free_page(PageNo page);
   std::uint64_t page_count() const { return header_.page_count; }
+  // The committed state this transaction started from; a commit that writes
+  // anything produces change_counter() + 1.
+  std::uint64_t change_counter() const { return snapshot_header_.change_counter; }
 
   // Durable when ok is returned.
   Status commit();

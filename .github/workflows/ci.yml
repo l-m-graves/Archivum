@@ -19,7 +19,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [linux-debug, linux-release]
+        include:
+          # Sanitized Debug runs fewer randomized iterations; Release runs
+          # the large counts the model-based tests are sized for.
+          - preset: linux-debug
+            crash_iters: "1000"
+          - preset: linux-release
+            crash_iters: "10000"
     env:
       CC: gcc-12
       CXX: g++-12
@@ -68,7 +74,7 @@ jobs:
         run: grep -h "ARCHIVUM_HAS_STD_FORMAT" build/${{ matrix.preset }}/CMakeCache.txt
       - name: Test
         env:
-          ARCHIVUM_CRASH_ITERS: "1000"
+          ARCHIVUM_CRASH_ITERS: ${{ matrix.crash_iters }}
           ASAN_OPTIONS: detect_leaks=0
           UBSAN_OPTIONS: print_stacktrace=1
         run: ctest --preset ${{ matrix.preset }}
@@ -79,7 +85,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        config: [debug, release]
+        include:
+          - config: debug
+            crash_iters: "1000"
+          - config: release
+            crash_iters: "10000"
     env:
       VCPKG_ROOT: C:\vcpkg-pinned
       VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-cache
@@ -120,5 +130,5 @@ jobs:
         run: Select-String -Path build/windows/CMakeCache.txt -Pattern "ARCHIVUM_HAS_STD_FORMAT"
       - name: Test
         env:
-          ARCHIVUM_CRASH_ITERS: "1000"
+          ARCHIVUM_CRASH_ITERS: ${{ matrix.crash_iters }}
         run: ctest --preset windows-${{ matrix.config }}

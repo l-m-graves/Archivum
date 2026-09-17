@@ -179,8 +179,12 @@ std::size_t max_cell_bytes(std::uint32_t page_size) {
 BTree::BTree(PageReader& reader, PageWriter* writer, PageNo root)
     : reader_(reader), writer_(writer), root_(root), page_size_(reader.page_size()) {}
 
+std::uint32_t BTree::max_key_bytes_for(std::uint32_t page_size) {
+  return static_cast<std::uint32_t>(max_cell_bytes(page_size) - kLeafCellHdr - 8);
+}
+
 std::uint32_t BTree::max_key_bytes() const {
-  return static_cast<std::uint32_t>(max_cell_bytes(page_size_) - kLeafCellHdr - 8);
+  return max_key_bytes_for(page_size_);
 }
 
 Result<PageNo> BTree::create(PageWriter& writer) {
