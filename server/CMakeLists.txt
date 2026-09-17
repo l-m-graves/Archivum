@@ -31,4 +31,4 @@ else()
 endif()
 
 add_executable(archivum src/main.cpp)
-target_link_libraries(archivum PRIVATE archivum_server archivum_warnings)
+target_link_libraries(archivum PRIVATE archivum_server archivum_punchline archivum_warnings)

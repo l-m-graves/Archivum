@@ -96,6 +96,18 @@ Status MemVfs::rename(const std::string& from, const std::string& to) {
 
 Status MemVfs::sync_directory(const std::string&) { return Status(); }
 
+Result<std::vector<std::string>> MemVfs::list(const std::string& dir) {
+  // Directories exist implicitly: a directory is any prefix of a path.
+  const std::string prefix = dir + "/";
+  std::vector<std::string> names;
+  for (const auto& [path, data] : files_) {
+    if (path.rfind(prefix, 0) != 0) continue;
+    const std::string rest = path.substr(prefix.size());
+    if (rest.find('/') == std::string::npos) names.push_back(rest);
+  }
+  return names;
+}
+
 bool MemVfs::has(const std::string& path) const { return files_.count(path) != 0; }
 
 std::vector<std::byte> MemVfs::contents(const std::string& path) const {

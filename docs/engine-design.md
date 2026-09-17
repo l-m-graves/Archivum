@@ -164,8 +164,42 @@ visible to itself and to nobody else until commit.
   random bounded scans in both directions and point lookups; the full
   invariant checker runs every few commits and after every recovery.
 
-## Deferred to Stage 4
+## Stage 4: backup, log archive, point-in-time recovery, migrations
 
-SQL over the typed API (parser, planner, the read-only engine), and the
-change feed. The typed API is what the SQL layer compiles to; nothing in
-Stage 4 touches pages.
+`docs/backup-recovery.md` has the operator's view. The engine additions:
+
+**I14. The log continues its file, or is refused.** The log header
+carries the change counter of the file it continues from (its base). At
+open the base must equal the file's counter, or the file may be ahead of
+the base by no more than the log's last commit (a crash between a
+checkpoint's file sync and its log reset). Anything else, such as a
+restored backup beside a live log, is refused as `Corrupt` rather than
+replayed. Tested by `restored_backup_beside_a_live_log_is_refused` and by
+every crash test of Stage 2, which now cross this rule at every step.
+
+**I15. The archive is durable before the log is emptied.** With
+`DbOptions::archive_dir` set, a checkpoint copies the committed log to
+`<archive>/<db id>-<base>.wal`, syncs it and its directory, and only then
+resets the log. A crash after the copy and before the reset re-archives
+the same base on the next checkpoint with a superset, which recovery
+accepts.
+
+**I16. Every commit names itself.** The page-0 image of a commit carries
+the change counter and the commit's wall-clock time, so a segment's
+commits are addressable by counter or by time without any side index,
+and recovery can verify that the commits it applies are consecutive.
+
+**I17. A backup is a database.** `Db::backup` copies every page of one
+snapshot into a new file, so the copy opens on its own, passes
+`Store::check`, and is the base for recovery. It runs as a reader and
+never blocks the writer.
+
+**I18. A migration step is one transaction.** `migrate` applies each
+pending step in its own `Writer` with its row in `archivum_migrations`
+and the new schema version; a crash leaves the store at a step boundary
+and the next run continues. `punchline_migration_survives_a_crash_at_every_step`
+crashes the Punchline schema migration at every VFS operation under
+every persistence policy.
+
+Not in the engine: the operational SQL layer and the change feed, which
+are v1.1 (`docs/plan-v1.md`).

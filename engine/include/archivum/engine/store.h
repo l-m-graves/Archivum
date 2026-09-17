@@ -209,6 +209,7 @@ class Store {
   Result<std::unique_ptr<Writer>> begin_write();
 
   Status checkpoint() { return db_->checkpoint(); }
+  Result<std::uint64_t> backup(Vfs& dst_vfs, const std::string& dst_path) { return db_->backup(dst_vfs, dst_path); }
   Db& db() { return *db_; }
   // The longest encoded primary key, or index key plus primary key, a
   // table of this store can hold; a longer one is refused as InvalidArgument.

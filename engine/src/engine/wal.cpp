@@ -27,19 +27,21 @@ Wal::Wal(Vfs& vfs, std::string path, std::uint32_t page_size)
 Wal::~Wal() { (void)close(); }
 
 Result<std::unique_ptr<Wal>> Wal::open(Vfs& vfs, std::string path, std::uint32_t page_size,
-                                       const std::array<std::byte, 16>& db_id,
-                                       WalRecoveryInfo* info) {
+                                       const WalOpenOptions& options, WalRecoveryInfo* info) {
   std::unique_ptr<Wal> w(new Wal(vfs, std::move(path), page_size));
+  w->read_only_ = options.read_only;
   auto exists = vfs.exists(w->path_);
   if (!exists.ok()) return exists.status();
+  if (options.read_only && !exists.value()) return Status::not_found(w->path_);
   OpenFlags flags;
-  flags.write = true;
-  flags.create = true;
+  flags.write = !options.read_only;
+  flags.create = !options.read_only;
   auto file = vfs.open(w->path_, flags);
   if (!file.ok()) return file.status();
   w->file_ = std::move(file).value();
   w->header_.page_size = page_size;
-  w->header_.db_id = db_id;
+  w->header_.db_id = options.db_id;
+  w->header_.base_change_counter = options.new_base_change_counter;
   if (!exists.value()) {
     w->header_.salt1 = random_salt();
     w->header_.salt2 = random_salt();
@@ -49,7 +51,7 @@ Result<std::unique_ptr<Wal>> Wal::open(Vfs& vfs, std::string path, std::uint32_t
     if (info != nullptr) *info = WalRecoveryInfo{};
     return w;
   }
-  if (Status s = w->recover(db_id, info); !s.ok()) return s;
+  if (Status s = w->recover(options, info); !s.ok()) return s;
   return w;
 }
 
@@ -60,7 +62,8 @@ Status Wal::write_header() {
   return file_->sync();
 }
 
-Status Wal::recover(const std::array<std::byte, 16>& db_id, WalRecoveryInfo* info) {
+Status Wal::recover(const WalOpenOptions& options, WalRecoveryInfo* info) {
+  const std::array<std::byte, 16>& db_id = options.db_id;
   WalRecoveryInfo local;
   auto size_r = file_->size();
   if (!size_r.ok()) return size_r.status();
@@ -78,6 +81,7 @@ Status Wal::recover(const std::array<std::byte, 16>& db_id, WalRecoveryInfo* inf
     }
   }
   if (!header_ok) {
+    if (read_only_) return Status::corrupt("log header invalid or for another database: " + path_);
     // With an honest fsync the header is durable before any frame is
     // acknowledged, so an unreadable header means no committed transaction
     // can be behind it. Start a fresh log.
@@ -112,7 +116,16 @@ Status Wal::recover(const std::array<std::byte, 16>& db_id, WalRecoveryInfo* inf
     running = fh.value().checksum;
     pending.emplace_back(fh.value().page_no, frame);
     if (fh.value().db_size_after_commit != 0) {
-      publish(pending, frame, fh.value().db_size_after_commit);
+      // The commit frame is the page-0 image; it names the commit.
+      if (fh.value().page_no != 0) break;
+      auto hdr = DbHeader::decode(std::span<const std::byte>(buf.data() + WalFrameHeader::kEncodedBytes, page_size_));
+      if (!hdr.ok()) break;
+      WalCommit c;
+      c.frame = frame;
+      c.db_size = fh.value().db_size_after_commit;
+      c.change_counter = hdr.value().change_counter;
+      c.commit_time_us = hdr.value().commit_time_us;
+      publish(pending, c);
       pending.clear();
       valid_end = frame_offset(frame) + frame_bytes;
       chain_ = running;
@@ -120,6 +133,12 @@ Status Wal::recover(const std::array<std::byte, 16>& db_id, WalRecoveryInfo* inf
     ++frame;
   }
   next_frame_ = last_commit_ + 1;
+  if (read_only_) {
+    local.dropped_bytes = size > valid_end ? size - valid_end : 0;
+    local.committed_frames = last_commit_;
+    if (info != nullptr) *info = local;
+    return Status();
+  }
   if (valid_end < size) {
     local.dropped_bytes = size - valid_end;
     if (Status s = file_->truncate(valid_end); !s.ok()) return s;
@@ -136,11 +155,38 @@ Status Wal::recover(const std::array<std::byte, 16>& db_id, WalRecoveryInfo* inf
   return Status();
 }
 
-void Wal::publish(const std::vector<std::pair<PageNo, FrameNo>>& frames, FrameNo commit_frame,
-                  std::uint64_t db_size) {
-  for (const auto& [page, fr] : frames) index_[page].push_back(fr);
-  commits_[commit_frame] = db_size;
-  last_commit_ = commit_frame;
+void Wal::publish(const std::vector<std::pair<PageNo, FrameNo>>& frames, const WalCommit& commit) {
+  for (const auto& [page, fr] : frames) {
+    index_[page].push_back(fr);
+    frame_pages_.push_back(page);
+  }
+  commits_[commit.frame] = commit.db_size;
+  commit_list_.push_back(commit);
+  last_commit_ = commit.frame;
+}
+
+Status Wal::copy_committed_to(Vfs& vfs, const std::string& path) {
+  if (!file_) return Status::io("WAL closed");
+  OpenFlags flags;
+  flags.write = true;
+  flags.create = true;
+  flags.truncate = true;
+  auto out = vfs.open(path, flags);
+  if (!out.ok()) return out.status();
+  const std::uint64_t total = committed_bytes();
+  std::vector<std::byte> buf(1 << 16);
+  std::uint64_t off = 0;
+  while (off < total) {
+    const std::size_t want = static_cast<std::size_t>(std::min<std::uint64_t>(buf.size(), total - off));
+    std::size_t got = 0;
+    if (Status s = file_->read(off, std::span<std::byte>(buf.data(), want), got); !s.ok()) return s;
+    if (got != want) return Status::corrupt("short read while archiving the log: " + path_);
+    if (Status s = out.value()->write(off, std::span<const std::byte>(buf.data(), got)); !s.ok()) return s;
+    off += got;
+  }
+  if (Status s = out.value()->sync(); !s.ok()) return s;
+  if (Status s = out.value()->close(); !s.ok()) return s;
+  return vfs.sync_directory(directory_of(path));
 }
 
 std::uint64_t Wal::db_size_at(FrameNo commit_frame) const {
@@ -171,6 +217,7 @@ Status Wal::read_frame_page(FrameNo frame, std::span<std::byte> out) {
 
 Status Wal::append_transaction(const std::vector<PageImage>& images, std::uint64_t db_size_after) {
   if (images.empty()) return Status::invalid_argument("empty transaction");
+  if (read_only_) return Status::invalid_argument("log opened read-only: " + path_);
   if (failed_) return Status::io("WAL failed after an earlier I/O error; reopen the database: " + path_);
   const std::uint64_t frame_bytes = WalFrameHeader::kEncodedBytes + page_size_;
   std::vector<std::byte> buf(frame_bytes * images.size());
@@ -207,7 +254,14 @@ Status Wal::append_transaction(const std::vector<PageImage>& images, std::uint64
     return d.code() == ErrorCode::Crashed ? d : s;
   }
   const FrameNo commit_frame = next_frame_ + images.size() - 1;
-  publish(frames, commit_frame, db_size_after);
+  WalCommit c;
+  c.frame = commit_frame;
+  c.db_size = db_size_after;
+  if (auto hdr = DbHeader::decode(images.back().data); hdr.ok()) {
+    c.change_counter = hdr.value().change_counter;
+    c.commit_time_us = hdr.value().commit_time_us;
+  }
+  publish(frames, c);
   next_frame_ = commit_frame + 1;
   chain_ = running;
   return Status();
@@ -228,10 +282,12 @@ std::map<PageNo, FrameNo> Wal::latest_frames(FrameNo up_to) const {
   return out;
 }
 
-Status Wal::reset() {
+Status Wal::reset(std::uint64_t base_change_counter) {
+  if (read_only_) return Status::invalid_argument("log opened read-only: " + path_);
   if (failed_) return Status::io("WAL failed after an earlier I/O error; reopen the database: " + path_);
   header_.salt1 = random_salt();
   header_.salt2 = random_salt();
+  header_.base_change_counter = base_change_counter;
   if (Status s = file_->truncate(0); !s.ok()) {
     // Unknown whether the frames are gone: fail closed until reopened.
     failed_ = true;
@@ -242,6 +298,8 @@ Status Wal::reset() {
   // bytes that no longer exist.
   index_.clear();
   commits_.clear();
+  commit_list_.clear();
+  frame_pages_.clear();
   last_commit_ = 0;
   next_frame_ = 1;
   chain_ = header_.chain_seed();

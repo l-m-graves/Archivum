@@ -204,6 +204,28 @@ class Win32Vfs final : public Vfs {
     (void)dir;
     return Status();
   }
+
+  Result<std::vector<std::string>> list(const std::string& dir) override {
+    const std::wstring pattern = to_wide(dir + "\\*");
+    WIN32_FIND_DATAW data{};
+    HANDLE h = ::FindFirstFileW(pattern.c_str(), &data);
+    if (h == INVALID_HANDLE_VALUE) {
+      const DWORD code = ::GetLastError();
+      if (code == ERROR_PATH_NOT_FOUND || code == ERROR_FILE_NOT_FOUND) return Status::not_found(dir);
+      return Status::io(last_error_message("FindFirstFile", dir));
+    }
+    std::vector<std::string> names;
+    do {
+      if (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+      const int needed = ::WideCharToMultiByte(CP_UTF8, 0, data.cFileName, -1, nullptr, 0, nullptr, nullptr);
+      if (needed <= 1) continue;
+      std::string name(static_cast<std::size_t>(needed - 1), '\0');
+      ::WideCharToMultiByte(CP_UTF8, 0, data.cFileName, -1, name.data(), needed, nullptr, nullptr);
+      names.push_back(std::move(name));
+    } while (::FindNextFileW(h, &data));
+    ::FindClose(h);
+    return names;
+  }
 };
 
 }  // namespace

@@ -38,6 +38,15 @@ struct DbOptions {
   // checkpoint attempt (skipped while readers are active).
   std::uint64_t checkpoint_threshold_frames = 1000;
   bool create_if_missing = true;
+  // Log archive directory. When set, every checkpoint copies the committed
+  // log to `<archive_dir>/<db id hex>-<base change counter>.wal` and syncs
+  // it before the log is emptied, so that point-in-time recovery can
+  // replay it on top of a backup (docs/backup-recovery.md). Empty: no
+  // archive, and a checkpoint discards the log.
+  std::string archive_dir;
+  // Wall clock for commit timestamps, µs since the Unix epoch UTC. Null
+  // means std::chrono::system_clock. Tests inject a deterministic clock.
+  std::int64_t (*now_us)() = nullptr;
 };
 
 struct DbStats {
@@ -49,6 +58,7 @@ struct DbStats {
   std::uint64_t active_readers = 0;
   std::uint64_t wal_recovered_frames = 0;    // at the last open
   std::uint64_t wal_dropped_tail_bytes = 0;  // at the last open
+  std::uint64_t archived_segments = 0;       // log segments archived by checkpoints
 };
 
 struct CheckReport {
@@ -138,6 +148,19 @@ class Db {
   // Verifies the committed state: header, every page checksum, and the
   // free list. Runs as a reader.
   Result<CheckReport> check();
+
+  // Online backup: copies the committed state as of one snapshot into a
+  // new database file at `dst_path` (no log). Runs as a reader, so the
+  // writer is never blocked; the copy is a consistent database that opens
+  // on its own and is the base for point-in-time recovery. Returns the
+  // change counter the backup is at.
+  Result<std::uint64_t> backup(Vfs& dst_vfs, const std::string& dst_path);
+
+  const std::array<std::byte, 16>& db_id() const;
+  // The archive segment name for a log whose base is `base_change_counter`.
+  static std::string archive_segment_name(const std::array<std::byte, 16>& db_id,
+                                          std::uint64_t base_change_counter);
+  std::int64_t now_us() const;
 
   DbStats stats() const;
   std::uint32_t page_size() const { return page_size_; }

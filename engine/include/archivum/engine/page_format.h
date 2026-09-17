@@ -25,8 +25,8 @@ struct DbHeader {
   static constexpr std::array<std::byte, 8> kMagic = {
       std::byte{'A'}, std::byte{'R'}, std::byte{'C'}, std::byte{'H'},
       std::byte{'V'}, std::byte{'D'}, std::byte{'B'}, std::byte{'1'}};
-  static constexpr std::uint32_t kFormatVersion = 1;
-  static constexpr std::size_t kEncodedBytes = 64;
+  static constexpr std::uint32_t kFormatVersion = 2;
+  static constexpr std::size_t kEncodedBytes = 72;
 
   std::uint32_t page_size = kDefaultPageSize;
   std::uint32_t format_version = kFormatVersion;
@@ -35,6 +35,7 @@ struct DbHeader {
   std::uint64_t freelist_count = 0;
   std::uint64_t change_counter = 0;  // incremented by every committed write transaction
   std::array<std::byte, 16> db_id{};  // random; the WAL carries the same id
+  std::int64_t commit_time_us = 0;    // wall clock of the commit that wrote this header, µs since epoch UTC
 
   void encode(std::span<std::byte> page) const;
   static Result<DbHeader> decode(std::span<const std::byte> page);
@@ -63,6 +64,10 @@ struct WalHeader {
   std::uint32_t salt1 = 0;  // fresh random values every time the WAL is reset
   std::uint32_t salt2 = 0;
   std::array<std::byte, 16> db_id{};
+  // change_counter of the database file this log continues from: the
+  // committed counter at the last checkpoint (0 for a new database). A log
+  // whose base does not match its file is refused rather than replayed.
+  std::uint64_t base_change_counter = 0;
 
   void encode(std::span<std::byte> out) const;  // out.size() >= kEncodedBytes
   static Result<WalHeader> decode(std::span<const std::byte> in);

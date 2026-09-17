@@ -11,6 +11,8 @@ add_library(archivum_engine STATIC
   src/engine/types.cpp
   src/engine/record.cpp
   src/engine/store.cpp
+  src/engine/recovery.cpp
+  src/engine/migrate.cpp
   $<IF:$<PLATFORM_ID:Windows>,src/vfs_win32.cpp,src/vfs_posix.cpp>
 )
 target_include_directories(archivum_engine PUBLIC include)

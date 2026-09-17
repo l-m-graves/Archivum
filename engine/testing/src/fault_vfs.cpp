@@ -221,6 +221,11 @@ Result<bool> FaultVfs::exists(const std::string& path) {
   return cache_.exists(path);
 }
 
+Result<std::vector<std::string>> FaultVfs::list(const std::string& dir) {
+  if (crashed_) return Status::crashed("list " + dir);
+  return cache_.list(dir);
+}
+
 Status FaultVfs::remove(const std::string& path) {
   if (crashed_) return Status::crashed("remove " + path);
   const Decision d = consult(OpKind::Remove, path, 0, 0);

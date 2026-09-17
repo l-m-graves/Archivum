@@ -22,6 +22,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <vector>
 
 #include "archivum/status.h"
 
@@ -69,6 +70,10 @@ class Vfs {
 
   // Makes directory-level changes (create, remove, rename) under `dir` durable.
   virtual Status sync_directory(const std::string& dir) = 0;
+
+  // Names (not paths) of the regular files directly in `dir`, unordered.
+  // NotFound when the directory does not exist.
+  virtual Result<std::vector<std::string>> list(const std::string& dir) = 0;
 };
 
 // The real filesystem. Paths are UTF-8 on every platform.

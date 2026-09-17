@@ -1,6 +1,7 @@
 // POSIX implementation of the VFS boundary. Used on Linux (CI and the
 // container deployment). Durability: fsync() on the file for data and size,
 // fsync() on the directory for create/remove/rename.
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -136,6 +137,23 @@ class PosixVfs final : public Vfs {
     if (::fsync(fd) != 0) st = Status::io(errno_message("fsync directory", dir));
     ::close(fd);
     return st;
+  }
+
+  Result<std::vector<std::string>> list(const std::string& dir) override {
+    DIR* d = ::opendir(dir.c_str());
+    if (d == nullptr) {
+      if (errno == ENOENT) return Status::not_found(dir);
+      return Status::io(errno_message("opendir", dir));
+    }
+    std::vector<std::string> names;
+    while (dirent* e = ::readdir(d)) {
+      const std::string name = e->d_name;
+      if (name == "." || name == "..") continue;
+      struct stat st{};
+      if (::stat((dir + "/" + name).c_str(), &st) == 0 && S_ISREG(st.st_mode)) names.push_back(name);
+    }
+    ::closedir(d);
+    return names;
   }
 };
 

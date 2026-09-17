@@ -27,12 +27,38 @@ struct WalRecoveryInfo {
   bool header_rewritten = false;
 };
 
+// One committed transaction in the log, with what its page-0 image says.
+struct WalCommit {
+  FrameNo frame = 0;  // the commit frame (the page-0 image)
+  std::uint64_t db_size = 0;
+  std::uint64_t change_counter = 0;
+  std::int64_t commit_time_us = 0;
+};
+
+struct WalOpenOptions {
+  std::array<std::byte, 16> db_id{};
+  std::uint64_t new_base_change_counter = 0;  // header base when the log is created
+  // Read-only: never rewrites or truncates the file; an invalid header is
+  // Corrupt instead of a fresh log. For archived segments and recovery.
+  bool read_only = false;
+};
+
 class Wal {
  public:
   static Result<std::unique_ptr<Wal>> open(Vfs& vfs, std::string path, std::uint32_t page_size,
-                                           const std::array<std::byte, 16>& db_id,
-                                           WalRecoveryInfo* info);
+                                           const WalOpenOptions& options, WalRecoveryInfo* info);
   ~Wal();
+
+  std::uint64_t base_change_counter() const { return header_.base_change_counter; }
+  const std::vector<WalCommit>& commits() const { return commit_list_; }
+  // Page number carried by `frame` (1-based; frames past the last commit
+  // are not addressable).
+  PageNo frame_page(FrameNo frame) const { return frame_pages_[frame - 1]; }
+  // Bytes of the file that belong to committed transactions, header included.
+  std::uint64_t committed_bytes() const { return frame_offset(last_commit_ + 1); }
+  // Writes header plus committed frames to a new file at `path` and syncs
+  // it and its directory. For log archiving before a reset.
+  Status copy_committed_to(Vfs& vfs, const std::string& path);
 
   // Last committed frame; 0 when the log holds no committed transaction.
   FrameNo last_commit() const { return last_commit_; }
@@ -53,9 +79,10 @@ class Wal {
   // Latest frame per page among committed frames up to `up_to`.
   std::map<PageNo, FrameNo> latest_frames(FrameNo up_to) const;
 
-  // Empties the log: truncate to a fresh header with new salts and sync.
-  // The caller has checkpointed everything it wants to keep.
-  Status reset();
+  // Empties the log: truncate to a fresh header with new salts, the given
+  // base change counter, and sync. The caller has checkpointed everything
+  // it wants to keep, and `base_change_counter` is what the data file says.
+  Status reset(std::uint64_t base_change_counter);
 
   // After a failed append: removes whatever was written past the last
   // commit, best effort. The chain makes leftovers harmless even if this
@@ -72,14 +99,13 @@ class Wal {
 
  private:
   Wal(Vfs& vfs, std::string path, std::uint32_t page_size);
-  Status recover(const std::array<std::byte, 16>& db_id, WalRecoveryInfo* info);
+  Status recover(const WalOpenOptions& options, WalRecoveryInfo* info);
   Status write_header();
   std::uint64_t frame_offset(FrameNo frame) const {
     return WalHeader::kEncodedBytes +
            (frame - 1) * (WalFrameHeader::kEncodedBytes + static_cast<std::uint64_t>(page_size_));
   }
-  void publish(const std::vector<std::pair<PageNo, FrameNo>>& frames, FrameNo commit_frame,
-               std::uint64_t db_size);
+  void publish(const std::vector<std::pair<PageNo, FrameNo>>& frames, const WalCommit& commit);
 
   Vfs& vfs_;
   std::string path_;
@@ -90,8 +116,11 @@ class Wal {
   FrameNo last_commit_ = 0;
   std::uint32_t chain_ = 0;  // checksum of the last committed frame, or the header's
   bool failed_ = false;
+  bool read_only_ = false;
   std::unordered_map<PageNo, std::vector<FrameNo>> index_;  // ascending frames per page
   std::map<FrameNo, std::uint64_t> commits_;                 // commit frame -> db size
+  std::vector<WalCommit> commit_list_;                       // in frame order
+  std::vector<PageNo> frame_pages_;                          // frame - 1 -> page, committed frames
 };
 
 }  // namespace archivum::engine

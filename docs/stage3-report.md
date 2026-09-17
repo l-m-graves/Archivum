@@ -89,8 +89,8 @@ seed is printed by every run and `ARCHIVUM_SEED` reproduces it.
    pushed the index key past the b-tree's limit (232 bytes at the test
    page size, 1002 at 4096). The store refuses this as `InvalidArgument`
    at insert, update and index creation; the model was taught the limit.
-   Consequence for Stage 4: an index on a long text column needs the SQL
-   layer to refuse it or truncate deliberately; the engine will not
+   Consequence for the SQL layer (v1.1): an index on a long text column
+   needs it to refuse or truncate deliberately; the engine will not
    silently do either.
 4. **Harness gaps.** A crash landing inside the reader-side comparison
    of an open write transaction, or at `begin_write`, was not followed by
@@ -114,8 +114,8 @@ in walk order, for the ownership cross-check) and `WriteTxn::change_counter`
   operation, not at commit; insert then update is the pattern.
 - **Checks are `column op constant` and `column IN`.** Enough for the
   Punchline schema (kinds, states, non-negative amounts); anything else
-  is an application check until Stage 4's expression evaluator exists,
-  at which point `CheckDef` grows a general predicate.
+  is an application check until the SQL layer's expression evaluator
+  exists (v1.1), at which point `CheckDef` grows a general predicate.
 - **Foreign keys require an index on the child.** `create_table` refuses
   a foreign key the child's primary key or an index cannot support, so
   the parent-side check is always a prefix lookup and never a table scan.
@@ -126,6 +126,10 @@ in walk order, for the ownership cross-check) and `WriteTxn::change_counter`
 
 ## Stage 4 next
 
-Read-only SQL over the typed API (parser, planner, expression evaluator,
-the visual builder's backend), the change feed, and the Punchline schema
-as the first migration. Nothing in Stage 4 touches pages.
+Correction: the first version of this section named SQL and the change
+feed as Stage 4. That was wrong. Per `docs/plan-v1.md` (accepted), SQL
+is v1.1 and Stage 4 is integrity check, restore, online backup, log
+archive, point-in-time recovery and restore-and-verify in CI. Stage 4 also
+carries the migration framework forward from Stage 5, with the Punchline
+schema as the first migration, so that its backup and recovery tests run
+against real data. See `docs/stage4-report.md`.

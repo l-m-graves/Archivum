@@ -28,6 +28,7 @@ message(STATUS "std::format available: ${ARCHIVUM_HAS_STD_FORMAT}")
 include(cmake/warnings.cmake)
 
 add_subdirectory(engine)
+add_subdirectory(modules/punchline)
 add_subdirectory(server)
 
 if(ARCHIVUM_BUILD_TESTS)

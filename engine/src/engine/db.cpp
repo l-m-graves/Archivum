@@ -1,6 +1,7 @@
 #include "archivum/engine/db.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <list>
 #include <random>
@@ -34,6 +35,7 @@ struct Db::Impl {
   std::mutex writer_mu;  // one write transaction (or checkpoint) at a time
   std::uint64_t active_readers = 0;
   std::uint64_t checkpoints = 0;
+  std::uint64_t archived_segments = 0;
   WalRecoveryInfo recovery;
   std::array<std::byte, 16> db_id{};
   bool closed = false;
@@ -186,9 +188,30 @@ Result<std::unique_ptr<Db>> Db::open(Vfs& vfs, std::string path, DbOptions optio
   if (Status s = vfs.sync_directory(directory_of(db->path_)); !s.ok()) return s;
 
   if (!db->impl_->wal) {
-    auto wal = Wal::open(vfs, db->wal_path_, db->page_size_, db->impl_->db_id, &db->impl_->recovery);
+    WalOpenOptions wo;
+    wo.db_id = db->impl_->db_id;
+    wo.new_base_change_counter = hdr.value().change_counter;
+    auto wal = Wal::open(vfs, db->wal_path_, db->page_size_, wo, &db->impl_->recovery);
     if (!wal.ok()) return wal.status();
     db->impl_->wal = std::move(wal).value();
+  }
+  // The log must continue from this file. Either its base is the file's
+  // change counter, or a crash landed between a checkpoint's file sync and
+  // its log reset, in which case the file is ahead of the base but no
+  // further than the log's last commit. Anything else means the file and
+  // the log belong to different histories (a restored backup beside a live
+  // log, for instance) and replaying would corrupt silently.
+  {
+    const Wal& wal = *db->impl_->wal;
+    const std::uint64_t file_cc = hdr.value().change_counter;
+    const std::uint64_t base = wal.base_change_counter();
+    const bool continues = base == file_cc ||
+                           (!wal.commits().empty() && base < file_cc && file_cc <= wal.commits().back().change_counter);
+    if (!continues) {
+      return Status::corrupt("log " + db->wal_path_ + " (base change counter " + std::to_string(base) +
+                             ") does not continue database " + db->path_ + " (change counter " +
+                             std::to_string(file_cc) + "); restore the matching log or remove it deliberately");
+    }
   }
   return db;
 }
@@ -212,13 +235,58 @@ Result<bool> Db::recover_page0_from_wal(std::span<std::byte> page0) {
   auto wh = WalHeader::decode(hbuf);
   if (!wh.ok()) return false;
   if (wh.value().page_size != page0.size()) return false;
-  auto wal = Wal::open(vfs_, wal_path_, wh.value().page_size, wh.value().db_id, &impl_->recovery);
+  WalOpenOptions wo;
+  wo.db_id = wh.value().db_id;
+  wo.new_base_change_counter = wh.value().base_change_counter;
+  auto wal = Wal::open(vfs_, wal_path_, wh.value().page_size, wo, &impl_->recovery);
   if (!wal.ok()) return wal.status();
   const FrameNo frame = wal.value()->find(0, wal.value()->last_commit());
   if (frame == 0) return false;
   if (Status s = wal.value()->read_frame_page(frame, page0); !s.ok()) return s;
   impl_->wal = std::move(wal).value();
   return true;
+}
+
+const std::array<std::byte, 16>& Db::db_id() const { return impl_->db_id; }
+
+std::int64_t Db::now_us() const {
+  if (options_.now_us != nullptr) return options_.now_us();
+  return std::chrono::duration_cast<std::chrono::microseconds>(
+             std::chrono::system_clock::now().time_since_epoch())
+      .count();
+}
+
+std::string Db::archive_segment_name(const std::array<std::byte, 16>& db_id, std::uint64_t base_change_counter) {
+  static const char* hex = "0123456789abcdef";
+  std::string name;
+  for (std::byte b : db_id) {
+    name += hex[std::to_integer<unsigned>(b) >> 4];
+    name += hex[std::to_integer<unsigned>(b) & 15];
+  }
+  std::string n = std::to_string(base_change_counter);
+  name += "-" + std::string(20 - std::min<std::size_t>(20, n.size()), '0') + n + ".wal";
+  return name;
+}
+
+Result<std::uint64_t> Db::backup(Vfs& dst_vfs, const std::string& dst_path) {
+  auto txn_r = begin_read();
+  if (!txn_r.ok()) return txn_r.status();
+  auto& txn = *txn_r.value();
+  OpenFlags flags;
+  flags.write = true;
+  flags.create = true;
+  flags.truncate = true;
+  auto out = dst_vfs.open(dst_path, flags);
+  if (!out.ok()) return out.status();
+  std::vector<std::byte> page(page_size_);
+  for (PageNo p = 0; p < txn.page_count(); ++p) {
+    if (Status s = txn.read_page(p, page); !s.ok()) return s;
+    if (Status s = out.value()->write(p * page_size_, page); !s.ok()) return s;
+  }
+  if (Status s = out.value()->sync(); !s.ok()) return s;
+  if (Status s = out.value()->close(); !s.ok()) return s;
+  if (Status s = dst_vfs.sync_directory(directory_of(dst_path)); !s.ok()) return s;
+  return txn.change_counter();
 }
 
 Status Db::close() {
@@ -358,10 +426,18 @@ Status Db::checkpoint_locked() {
   }
   // The data file must be durable before the log that made it so goes away.
   if (Status s = impl_->file->sync(); !s.ok()) return s;
+  const std::uint64_t committed_cc = wal.commits().back().change_counter;
+  // Archive the log before it is emptied; the segment is named by the
+  // base it continues from so recovery can chain segments.
+  if (!options_.archive_dir.empty()) {
+    const std::string seg = options_.archive_dir + "/" + archive_segment_name(impl_->db_id, wal.base_change_counter());
+    if (Status s = wal.copy_committed_to(vfs_, seg); !s.ok()) return s;
+    ++impl_->archived_segments;
+  }
   // Whatever reset() manages to do, cached copies keyed by frame are stale
   // from here on; drop them first.
   impl_->cache_clear();
-  if (Status s = wal.reset(); !s.ok()) return s;
+  if (Status s = wal.reset(committed_cc); !s.ok()) return s;
   ++impl_->checkpoints;
   return Status();
 }
@@ -424,6 +500,7 @@ DbStats Db::stats() const {
   DbStats s;
   s.wal_frames = impl_->wal ? impl_->wal->frame_count() : 0;
   s.checkpoints = impl_->checkpoints;
+  s.archived_segments = impl_->archived_segments;
   s.active_readers = impl_->active_readers;
   s.wal_recovered_frames = impl_->recovery.committed_frames;
   s.wal_dropped_tail_bytes = impl_->recovery.dropped_bytes;
@@ -529,6 +606,7 @@ Status WriteTxn::commit() {
     return Status();
   }
   header_.change_counter = snapshot_header_.change_counter + 1;
+  header_.commit_time_us = db_.now_us();
   std::vector<std::pair<PageNo, std::vector<std::byte>>> images;
   images.reserve(dirty_.size() + 1);
   for (auto& [page, data] : dirty_) {

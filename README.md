@@ -4,10 +4,10 @@ Storage engine, application server, and low-code SQL interface for the
 Punchline, Finalysis, and Synthex applications. One C++20 binary, one data
 directory, no external database.
 
-Status: **Stage 3** (b-trees, typed records, catalog, constraints, typed
-API with secondary indexes, model-based tests, invariant checker, dump
-and restore). No SQL yet. See `docs/plan-v1.md` for the plan and
-`docs/engine-design.md` for the engine.
+Status: **Stage 4** (integrity check, online backup, restore, log
+archive, point-in-time recovery, migrations, the Punchline schema as the
+first migration). No SQL yet (v1.1). See `docs/plan-v1.md` for the plan
+and `docs/engine-design.md` for the engine.
 
 ## Build
 
@@ -31,14 +31,17 @@ server/            application server library and the archivum executable
   include/archivum/server/  config.h oidc.h app.h
   src/               config.cpp app.cpp main.cpp auth/oidc.cpp http/json_bridge.cpp
 engine/            storage engine library (archivum_engine)
-  include/archivum/  status.h crc32c.h vfs.h journal.h engine/{db,page_format,btree,types,record,store}.h
+  include/archivum/  status.h crc32c.h vfs.h journal.h
+                     engine/{db,page_format,btree,types,record,store,recovery,migrate}.h
   src/               crc32c.cpp journal.cpp vfs_posix.cpp vfs_win32.cpp
-                     engine/{db,wal,page_format,btree,types,record,store}.cpp
+                     engine/{db,wal,page_format,btree,types,record,store,recovery,migrate}.cpp
   testing/           test-only doubles: MemVfs, FaultVfs (the crash shim)
+modules/punchline/   the Punchline module: its schema as migrations (Stage 4); endpoints in Stage 6
 tests/
   support/           minimal test framework (no dependency)
   unit/              per-component tests
   crash/             crash-injection tests (the Stage 0 gate)
+  cli/               the binary's operational subcommands on real files
   server/            test PKI, test issuer, integration and saturation tests (Stage 1)
 config/            archivum.example.json
 docs/                design, formats, durability model, testing model
@@ -65,3 +68,6 @@ docs/                design, formats, durability model, testing model
 - `docs/btree-format.md`: node, cell and overflow layout of the b-tree, its split and erase rules.
 - `docs/store-format.md`: types, order-preserving key encoding, row encoding, catalog, indexes, constraints.
 - `docs/stage3-report.md`: the Stage 3 gate, test figures and findings.
+- `docs/backup-recovery.md`: backup, restore, log archive and point-in-time recovery, for operators.
+- `docs/punchline-schema.md`: the Punchline tables, their constraints and the assumptions behind them.
+- `docs/stage4-report.md`: the Stage 4 gate, test figures and findings.

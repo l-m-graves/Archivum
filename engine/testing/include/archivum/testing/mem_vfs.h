@@ -25,6 +25,7 @@ class MemVfs final : public Vfs {
   Status remove(const std::string& path) override;
   Status rename(const std::string& from, const std::string& to) override;
   Status sync_directory(const std::string& dir) override;
+  Result<std::vector<std::string>> list(const std::string& dir) override;
 
   // Inspection and manipulation for tests.
   bool has(const std::string& path) const;

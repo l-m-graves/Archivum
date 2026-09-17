@@ -66,8 +66,18 @@ Both tiers are tested at every crash point of a fixed workload under four
 persistence policies, and with seeded random faults, in
 `tests/crash/db_crash_test.cpp`.
 
-## Engine tooling (Stage 4, to be written)
+## Engine tooling (Stage 4)
 
-Backup, restore, log archive, and point-in-time recovery inherit the
-guarantees above and add the off-host copy that the lying-fsync tier
-depends on.
+Backup, restore, log archive and point-in-time recovery
+(`docs/backup-recovery.md`) inherit the guarantees above. A backup is a
+consistent copy of one committed snapshot; an archived log segment is the
+committed log as of one checkpoint, synced before the live log is
+emptied. Under an honest fsync, a backup plus the archived segments plus
+the live log reproduce every acknowledged commit. Under a lying fsync the
+archive is the defence the second tier depends on: copied off host at a
+cadence set by the acceptable loss window (instructions v2, Q8), it makes
+a commit that the local disk drops recoverable from the copy that was
+made while it was still there. What the archive cannot do is recover a
+commit the disk dropped before the checkpoint that would have archived
+it, so the loss window is at most one checkpoint interval plus the copy
+cadence.

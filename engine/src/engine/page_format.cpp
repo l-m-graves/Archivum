@@ -46,6 +46,7 @@ void DbHeader::encode(std::span<std::byte> page) const {
   put_u64(p + 32, freelist_count);
   put_u64(p + 40, change_counter);
   std::memcpy(p + 48, db_id.data(), 16);
+  put_u64(p + 64, static_cast<std::uint64_t>(commit_time_us));
 }
 
 Result<DbHeader> DbHeader::decode(std::span<const std::byte> page) {
@@ -60,6 +61,7 @@ Result<DbHeader> DbHeader::decode(std::span<const std::byte> page) {
   h.freelist_count = get_u64(p + 32);
   h.change_counter = get_u64(p + 40);
   std::memcpy(h.db_id.data(), p + 48, 16);
+  h.commit_time_us = static_cast<std::int64_t>(get_u64(p + 64));
   if (h.format_version != kFormatVersion) {
     return Status::unsupported("database format version " + std::to_string(h.format_version));
   }
@@ -95,6 +97,7 @@ void WalHeader::encode(std::span<std::byte> out) const {
   put_u32(p + 12, salt1);
   put_u32(p + 16, salt2);
   std::memcpy(p + 20, db_id.data(), 16);
+  put_u64(p + 36, base_change_counter);
   put_u32(p + 44, crc32c(std::span<const std::byte>(p, 44)));
 }
 
@@ -110,6 +113,7 @@ Result<WalHeader> WalHeader::decode(std::span<const std::byte> in) {
   h.salt1 = get_u32(p + 12);
   h.salt2 = get_u32(p + 16);
   std::memcpy(h.db_id.data(), p + 20, 16);
+  h.base_change_counter = get_u64(p + 36);
   return h;
 }
 
