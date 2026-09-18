@@ -1,7 +1,7 @@
 # Stage 5 report: server core
 
 Scope from `docs/plan-v1.md` (Stage 5) and the Stage 5 rulings. CI run
-`[CI-RUN]` on five jobs: Linux Debug (ASan+UBSan), Linux Release, Linux
+[23](https://github.com/l-m-graves/Archivum/actions/runs/35367758201) on five jobs: Linux Debug (ASan+UBSan), Linux Release, Linux
 Debug ThreadSanitizer, Windows Debug, Windows Release.
 
 ## 1. ThreadSanitizer
@@ -50,7 +50,7 @@ is no suppressions file and no `ATTRIBUTE_NO_SANITIZE` anywhere.
 4. **Nothing else.** With those fixed, the engine suites (`db_test`,
    `store_test`, `backup_test`, `concurrency_test`, `core_test`) and the
    three server suites are clean under TSan with instrumented
-   dependencies, locally and in CI run `[CI-RUN]`.
+   dependencies, locally and in CI run [23](https://github.com/l-m-graves/Archivum/actions/runs/35367758201).
 
 One more defect came out of the review the TSan work prompted, not from
 TSan itself: the checkpoint wrote an archived segment directly under its
@@ -130,14 +130,14 @@ CI run 23, seconds:
 
 | Test | Linux Debug (ASan+UBSan) | Linux Release | Linux TSan | Windows Debug | Windows Release |
 |---|---|---|---|---|---|
-| concurrency_test | 2.01 | 0.10 | 4.48 | `[WD]` | `[WR]` |
-| core_test | 6.38 | 0.33 | (not labelled) | `[WD]` | `[WR]` |
-| punchline_rules_test | 0.09 | 0.01 | | `[WD]` | `[WR]` |
-| punchline_migration_test (740 crash points) | 30.36 | 1.88 | | `[WD]` | `[WR]` |
-| server_integration_test | 3.88 | 3.61 | 5.01 | `[WD]` | `[WR]` |
-| server_core_test | 12.79 | 5.50 | 42.78 | `[WD]` | `[WR]` |
-| server_saturation_test | 4.12 | 3.66 | 5.10 | `[WD]` | `[WR]` |
-| whole suite (23 tests; TSan: the 7 labelled) | 119.3 | 36.9 | 64.5 | `[WD]` | `[WR]` |
+| concurrency_test | 2.01 | 0.10 | 4.48 | 1.79 | 0.70 |
+| core_test | 6.38 | 0.33 | (not labelled) | 1.75 | 0.46 |
+| punchline_rules_test | 0.09 | 0.01 | | 0.05 | 0.01 |
+| punchline_migration_test (740 crash points) | 30.36 | 1.88 | | 28.58 | 2.22 |
+| server_integration_test | 3.88 | 3.61 | 5.01 | 6.28 | 4.00 |
+| server_core_test | 12.79 | 5.50 | 42.78 | 13.14 | 6.32 |
+| server_saturation_test | 4.12 | 3.66 | 5.10 | 12.44 | 5.02 |
+| whole suite (23 tests; TSan: the 7 labelled) | 119.3 | 36.9 | 64.5 | 106.9 | 50.2 |
 
 `server_core_test` under TSan spends most of its time in the health test
 waiting out the shipper cadence, as designed.
