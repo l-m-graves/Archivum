@@ -40,9 +40,17 @@ is no suppressions file and no `ATTRIBUTE_NO_SANITIZE` anywhere.
    instruments every port through its own triplet rather than adding a
    suppressions file: a suppression would have hidden the same classes
    of report in our own code.
-3. **Nothing else.** The engine suites (`db_test`, `store_test`,
-   `backup_test`, `concurrency_test`, `core_test`) and the Stage 5 server
-   suite are clean under TSan with instrumented dependencies.
+3. **One report from CI that the local run did not produce: an at-exit
+   race in the test fixture.** The server test fixture is heap-allocated
+   and never destroyed (Drogon's singletons are destroyed during exit),
+   so its client event-loop thread was still tearing down a connection,
+   freeing an `SSL_CTX`, while `OPENSSL_cleanup` ran from `atexit` on the
+   main thread. A real race, in test code, only at process exit. Fixed:
+   the last test stops the client loop and joins it before returning.
+4. **Nothing else.** With those fixed, the engine suites (`db_test`,
+   `store_test`, `backup_test`, `concurrency_test`, `core_test`) and the
+   three server suites are clean under TSan with instrumented
+   dependencies, locally and in CI run `[CI-RUN]`.
 
 One more defect came out of the review the TSan work prompted, not from
 TSan itself: the checkpoint wrote an archived segment directly under its
@@ -119,6 +127,12 @@ module.
 ## 5. Figures
 
 `[FIGURES]`
+
+Two CI-only failures on the way, both in tests, both fixed in the same
+push as the fixture race: `/healthz` is 503 by design until the first
+off-host copy succeeds, and the health and saturation tests on the CI
+runners asked before the shipper's first pass had run; they now wait for
+the first 200.
 
 ## 6. Open
 

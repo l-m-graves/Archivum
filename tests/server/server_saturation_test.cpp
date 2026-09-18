@@ -96,6 +96,9 @@ ARCHIVUM_TEST(saturation_report) {
         },
         10.0);
   };
+  // Health is 503 until the first off-host copy: wait for it so the probe
+  // below measures the event loop, not the shipper.
+  REQUIRE_MSG(f.wait_healthy(), "health never reached 200 before the load");
   // Phase 1, connection storm: one request per connection, all at once.
   // Each first request pays connect, client-side TLS context creation, and
   // the handshake. Measured and reported separately from steady state.

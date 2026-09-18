@@ -79,6 +79,7 @@ ARCHIVUM_TEST(server_starts_and_fetches_jwks_over_verified_https) {
 ARCHIVUM_TEST(healthz_reports_certificate_and_jwks_state) {
   auto& f = fixture();
   REQUIRE_OK(f.run_status);
+  REQUIRE_MSG(f.wait_healthy(), "health never reached 200: the off-host copy did not succeed");
   auto r = f.get("/healthz");
   REQUIRE_MSG(r.result == drogon::ReqResult::Ok, "request failed");
   REQUIRE(r.status == 200);

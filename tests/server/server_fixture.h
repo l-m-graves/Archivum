@@ -135,6 +135,25 @@ class ServerFixture {
       if (!finished) drogon::app().quit();
       thread.join();
     }
+    // Stop the client loop too, so that no connection is torn down on its
+    // thread while OpenSSL's at-exit cleanup runs on the main thread
+    // (ThreadSanitizer reported exactly that in CI run 22).
+    if (!client_stopped) {
+      client_stopped = true;
+      client_loop.getLoop()->quit();
+      client_loop.wait();
+    }
+  }
+
+  // /healthz is 503 until the first off-host copy has succeeded; the
+  // shipper runs every second in tests. Waits for the first 200.
+  bool wait_healthy(int seconds = 15) {
+    for (int i = 0; i < seconds * 10; ++i) {
+      auto r = get("/healthz");
+      if (r.result == drogon::ReqResult::Ok && r.status == 200) return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
   }
 
 
@@ -235,6 +254,7 @@ class ServerFixture {
   archivum::server::Config config;
   std::thread thread;
   std::atomic<bool> finished{false};
+  bool client_stopped = false;
   archivum::Status run_status;
   trantor::EventLoopThread client_loop{"archivum-test-client"};
 };
