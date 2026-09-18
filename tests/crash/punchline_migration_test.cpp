@@ -5,6 +5,8 @@
 // and the migration is rerun, ending in the same state every time.
 #include <cstdio>
 
+#include "archivum/core/module.h"
+#include "archivum/core/schema.h"
 #include "archivum/engine/migrate.h"
 #include "archivum/punchline/schema.h"
 #include "archivum/testing/fault_vfs.h"
@@ -43,20 +45,27 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
   auto st = Store::open(vfs, "p/punchline.db", opts());
   REQUIRE_OK(st.status());
   Store& store = *st.value();
-  auto r = migrate(store, punchline::migrations());
+  auto r = core::migrate_all(store, {&punchline::module()});
   REQUIRE_OK(r.status());
-  CHECK(r.value().to_version == 1);
+  REQUIRE(r.value().modules.size() == 2);
+  CHECK(r.value().modules[0].first == core::kModule && r.value().modules[0].second.to_version == 1);
+  CHECK(r.value().modules[1].first == punchline::kModule && r.value().modules[1].second.to_version == 1);
+  const std::size_t kCoreTables = 5;
   {
     auto rd = store.begin_read();
     REQUIRE_OK(rd.status());
     for (const std::string& name : punchline::v1_tables()) {
       CHECK_MSG(rd.value()->catalog().table(name) != nullptr, "missing table " << name);
     }
-    CHECK(rd.value()->catalog().tables.size() == punchline::v1_tables().size() + 1);  // + archivum_migrations
+    CHECK(rd.value()->catalog().tables.size() == punchline::v1_tables().size() + kCoreTables + 1);  // + archivum_migrations
+    CHECK(rd.value()->catalog().schema_version == 2);
+    auto codes = rd.value()->scan_all("pay_codes");
+    REQUIRE_OK(codes.status());
+    CHECK(codes.value().size() == 5);
   }
-  auto again = migrate(store, punchline::migrations());
+  auto again = core::migrate_all(store, {&punchline::module()});
   REQUIRE_OK(again.status());
-  CHECK(again.value().applied.empty());
+  CHECK(again.value().modules[1].second.applied.empty());
 
   auto w = store.begin_write();
   REQUIRE_OK(w.status());
@@ -122,8 +131,20 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
   CHECK(wr.remove("time_entries", {Value::integer(1)}).code() == ErrorCode::Constraint);
   CHECK(wr.remove("devices", {Value::integer(1)}).code() == ErrorCode::Constraint);
   // Approval transition referencing its audit entry.
-  REQUIRE_OK(wr.insert("audit_log", {Value::integer(1), now, Value::text("tid-1"), Value::text("oid-9"), Value::null(), Value::null(),
-                                     Value::text("approve"), Value::text("time_entries"), Value::text("1"), Value::null(), Value::null()}));
+  REQUIRE_OK(wr.insert("audit_log", {Value::integer(1), now, Value::text("principal"), Value::text("tid-1"), Value::text("oid-9"),
+                                     Value::null(), Value::null(), Value::text("approve"), Value::text("time_entries"),
+                                     Value::text("1"), Value::null(), Value::null()}));
+  // Supervisor assignment referencing its audit row; pay code must exist.
+  REQUIRE_OK(wr.insert("supervisor_assignments", {Value::integer(1), Value::integer(2), Value::integer(1), now, Value::null(),
+                                                  Value::text("installer"), Value::integer(1)}));
+  Row coded = entry;
+  coded[0] = Value::integer(3);
+  coded[1] = Value::uuid(uuid(12));
+  coded[4] = Value::integer(9);
+  coded[15] = Value::text("bonus");
+  CHECK(wr.insert("time_entries", coded).code() == ErrorCode::Constraint);
+  coded[15] = Value::text("overtime");
+  REQUIRE_OK(wr.insert("time_entries", coded));
   REQUIRE_OK(wr.insert("approvals", {Value::integer(1), Value::integer(1), Value::integer(1), Value::text("submitted"), Value::text("approved"),
                                      Value::text("tid-1"), Value::text("oid-9"), Value::null(), now, Value::null(), Value::integer(1)}));
   CHECK(wr.insert("approvals", {Value::integer(2), Value::integer(1), Value::integer(1), Value::text("submitted"), Value::text("approved"),
@@ -138,7 +159,7 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
   auto rep = store.check();
   REQUIRE_OK(rep.status());
   CHECK_MSG(rep.value().ok, rep.value().problems[0]);
-  CHECK(rep.value().tables == punchline::v1_tables().size() + 1);
+  CHECK(rep.value().tables == punchline::v1_tables().size() + kCoreTables + 1);
 }
 
 ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
@@ -148,7 +169,7 @@ ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
     MemVfs vfs;
     auto st = Store::open(vfs, "p/ref.db", opts());
     REQUIRE_OK(st.status());
-    REQUIRE_OK(migrate(*st.value(), punchline::migrations()).status());
+    REQUIRE_OK(core::migrate_all(*st.value(), {&punchline::module()}).status());
     auto d = st.value()->dump();
     REQUIRE_OK(d.status());
     reference = std::move(d.value());
@@ -181,7 +202,7 @@ ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
         REQUIRE_MSG(st.status().code() == ErrorCode::Crashed, "open: " << st.status().to_string());
         crashed = true;
       } else {
-        auto r = migrate(*st.value(), punchline::migrations());
+        auto r = core::migrate_all(*st.value(), {&punchline::module()});
         if (!r.ok()) {
           REQUIRE_MSG(r.status().code() == ErrorCode::Crashed || r.status().code() == ErrorCode::IoError,
                       "migrate: " << r.status().to_string());
@@ -195,9 +216,9 @@ ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
         auto final = Store::open(vfs, "p/crash.db", opts());
         REQUIRE_OK(final.status());
         CHECK_MSG(same_as_reference(*final.value()).empty(), same_as_reference(*final.value()));
-        auto again = migrate(*final.value(), punchline::migrations());
+        auto again = core::migrate_all(*final.value(), {&punchline::module()});
         REQUIRE_OK(again.status());
-        CHECK(again.value().applied.empty());
+            CHECK(again.value().modules[1].second.applied.empty());
         break;
       }
       ++crashes;
@@ -213,13 +234,14 @@ ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
       {
         auto rd = re.value()->begin_read();
         REQUIRE_OK(rd.status());
+        // Step boundaries: nothing, the core schema, or both.
         const std::uint64_t v = rd.value()->catalog().schema_version;
-        REQUIRE_MSG(v == 0 || v == 1, "schema version " << v << " after crash at step " << step);
-        if (v == 0) {
-          REQUIRE_MSG(rd.value()->catalog().tables.empty(), "partial schema after crash at step " << step);
-        }
+        REQUIRE_MSG(v <= 2, "schema version " << v << " after crash at step " << step);
+        const std::size_t n = rd.value()->catalog().tables.size();
+        REQUIRE_MSG((v == 0 && n == 0) || (v == 1 && n == 6) || (v == 2 && n == 16),
+                    "partial schema (" << n << " tables at version " << v << ") after crash at step " << step);
       }
-      auto r = migrate(*re.value(), punchline::migrations());
+      auto r = core::migrate_all(*re.value(), {&punchline::module()});
       REQUIRE_MSG(r.ok(), "migrate after crash at step " << step << ": " << r.status().to_string());
       CHECK_MSG(same_as_reference(*re.value()).empty(), same_as_reference(*re.value()));
       re = Result<std::unique_ptr<Store>>(Status::io("released"));
@@ -233,5 +255,5 @@ ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
     }
   }
   std::printf("  %d crash points\n", crashes);
-  CHECK(crashes > 50);
+  CHECK(crashes > 100);
 }

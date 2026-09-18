@@ -4,15 +4,21 @@
 #pragma once
 
 #include <atomic>
+#include <filesystem>
 #include <functional>
 #include <future>
 #include <memory>
 #include <string>
+#include <fstream>
+#include <sstream>
 #include <thread>
 
 #include <drogon/drogon.h>
 #include <trantor/net/EventLoopThread.h>
 
+#include "archivum/core/authz.h"
+#include "archivum/core/recorder.h"
+#include "archivum/punchline/data.h"
 #include "archivum/server/app.h"
 #include "test_issuer.h"
 #include "test_pki.h"
@@ -77,10 +83,22 @@ class ServerFixture {
     cfg.oidc.clock_skew_seconds = 120;
     cfg.oidc.jwks_refresh_min_interval_seconds = jwks_refresh_floor_seconds;
     cfg.oidc.jwks_default_max_age_seconds = 3600;
+    // Stage 5: the store, its archive, the off-host destination and the log.
+    std::filesystem::create_directories(dir + "/archive");
+    std::filesystem::create_directories(dir + "/offhost");
+    cfg.database.path = dir + "/live.db";
+    cfg.database.archive_dir = dir + "/archive";
+    cfg.backup.destination = dir + "/offhost";
+    cfg.backup.archive_cadence_seconds = 1;
+    cfg.backup.backup_cadence_seconds = 3600;
+    cfg.logging.file = dir + "/server.log";
     config = cfg;
 
     app = std::make_unique<archivum::server::App>(cfg);
     if (archivum::Status s = app->configure(); !s.ok()) return s;
+    // Seed the default test principal as admin and a mapped employee, so
+    // the identity tests have standing; an unmapped principal is 403.
+    if (archivum::Status s = seed(); !s.ok()) return s;
     issuer->register_routes();
     auto& d = drogon::app();
     // Good issuer listener: certificate the validator trusts.
@@ -119,6 +137,7 @@ class ServerFixture {
     }
   }
 
+
   struct Response {
     drogon::ReqResult result = drogon::ReqResult::Ok;
     int status = 0;
@@ -147,6 +166,66 @@ class ServerFixture {
       r.www_authenticate = resp->getHeader("www-authenticate");
     }
     return r;
+  }
+
+  static constexpr const char* kAdminOid = "8f1c2b2e-0000-4000-8000-000000000001";
+  static constexpr const char* kEmployeeOid = "8f1c2b2e-0000-4000-8000-000000000002";
+  static constexpr const char* kTid = "7a3d5c11-0000-4000-8000-0000000000aa";
+
+  archivum::Status seed() {
+    auto& store = app->store();
+    auto w = store.begin_write();
+    if (!w.ok()) return w.status();
+    archivum::core::Actor sys;
+    sys.account = "test-seed";
+    archivum::core::Recorder rec(*w.value(), app->policy(), sys, "test.seed", store.db().now_us());
+    if (!rec.status().ok()) return rec.status();
+    if (auto r = archivum::core::grant_role(rec, kTid, kAdminOid, "admin", "test-seed", 1); !r.ok()) return r.status();
+    archivum::punchline::Employee e;
+    e.id = 1;
+    e.employee_number = "E0001";
+    e.display_name = "Mapped Employee";
+    e.tid = kTid;
+    e.oid = kEmployeeOid;
+    e.site_zone = "America/Los_Angeles";
+    e.created_at = e.updated_at = 1;
+    if (archivum::Status s = rec.insert("employees", e.to_row()); !s.ok()) return s;
+    return w.value()->commit();
+  }
+
+  // Synchronous request with a JSON body.
+  Response send(drogon::HttpMethod method, const std::string& path, const std::string& body,
+                const std::string& authorization = "", std::uint16_t port = 0) {
+    auto client = drogon::HttpClient::newHttpClient(
+        "https://127.0.0.1:" + std::to_string(port == 0 ? ports.server : port), client_loop.getLoop(), false, true);
+    client->addSSLConfigs({{"VerifyCAFile", ca1_cert}});
+    auto req = drogon::HttpRequest::newHttpRequest();
+    req->setMethod(method);
+    req->setPath(path);
+    if (!body.empty()) {
+      req->setContentTypeCode(drogon::CT_APPLICATION_JSON);
+      req->setBody(body);
+    }
+    if (!authorization.empty()) req->addHeader("Authorization", authorization);
+    auto [result, resp] = client->sendRequest(req, 10.0);
+    Response r;
+    r.result = result;
+    if (result == drogon::ReqResult::Ok && resp) {
+      r.status = static_cast<int>(resp->statusCode());
+      r.body = std::string(resp->body());
+      r.www_authenticate = resp->getHeader("www-authenticate");
+    }
+    return r;
+  }
+  Response post(const std::string& path, const std::string& body, const std::string& authorization = "") {
+    return send(drogon::Post, path, body, authorization);
+  }
+
+  std::string log_text() const {
+    std::ifstream in(dir + "/server.log");
+    std::ostringstream out;
+    out << in.rdbuf();
+    return out.str();
   }
 
   Ports ports{};

@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(ARCHIVUM_BUILD_TESTS "Build the test binaries" ON)
 option(ARCHIVUM_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)
 option(ARCHIVUM_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer (GCC/Clang only)" OFF)
+option(ARCHIVUM_TSAN "Enable ThreadSanitizer (GCC/Clang only; exclusive with ARCHIVUM_SANITIZERS)" OFF)
 option(ARCHIVUM_PRODUCTION_BUILD "Production build: refuses test issuers and non-OS trust anchors" OFF)
 
 # Record C++20 library feature availability for docs/cpp-subset.md. GCC 12's
@@ -28,6 +29,7 @@ message(STATUS "std::format available: ${ARCHIVUM_HAS_STD_FORMAT}")
 include(cmake/warnings.cmake)
 
 add_subdirectory(engine)
+add_subdirectory(core)
 add_subdirectory(modules/punchline)
 add_subdirectory(server)
 

@@ -17,9 +17,19 @@ else()
   if(ARCHIVUM_WARNINGS_AS_ERRORS)
     target_compile_options(archivum_warnings INTERFACE -Werror)
   endif()
+  if(ARCHIVUM_SANITIZERS AND ARCHIVUM_TSAN)
+    message(FATAL_ERROR "ARCHIVUM_SANITIZERS (ASan+UBSan) and ARCHIVUM_TSAN cannot share a build")
+  endif()
   if(ARCHIVUM_SANITIZERS)
     target_compile_options(archivum_warnings INTERFACE
       -fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=all)
     target_link_options(archivum_warnings INTERFACE -fsanitize=address,undefined)
+  endif()
+  if(ARCHIVUM_TSAN)
+    # ThreadSanitizer: data races between threads. ASan and UBSan cannot see
+    # them (docs/testing/fault-model.md, "what each tool sees"). Separate
+    # build; CI runs the concurrency-labelled tests under it.
+    target_compile_options(archivum_warnings INTERFACE -fsanitize=thread -fno-omit-frame-pointer)
+    target_link_options(archivum_warnings INTERFACE -fsanitize=thread)
   endif()
 endif()

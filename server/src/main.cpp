@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include "archivum/core/accounts.h"
+#include "archivum/core/module.h"
 #include "archivum/engine/migrate.h"
 #include "archivum/engine/recovery.h"
 #include "archivum/engine/store.h"
@@ -23,6 +25,11 @@ int usage() {
                "  archivum serve --config <path>                   run the application server\n"
                "  archivum check --db <path>                       verify every invariant of a database\n"
                "  archivum migrate --db <path>                     apply pending schema migrations\n"
+               "  archivum account create --db <path> --username <u> --kind break_glass|device_admin\n"
+               "                                                   create a local account, disabled; prints its password once\n"
+               "  archivum account enable --db <path> --username <u> --hours <n>\n"
+               "  archivum account disable --db <path> --username <u>\n"
+               "  archivum account list --db <path>\n"
                "  archivum backup --db <path> --to <file>          online backup as of one snapshot\n"
                "  archivum restore --from <file> --to <path> [--discard-log]\n"
                "                                                   restore a backup as a database\n"
@@ -77,11 +84,13 @@ int cmd_migrate(const std::map<std::string, std::string>& a) {
   auto vfs = archivum::make_os_vfs();
   auto st = archivum::engine::Store::open(*vfs, a.at("--db"));
   if (!st.ok()) return fail("open", st.status());
-  auto rep = archivum::engine::migrate(*st.value(), archivum::punchline::migrations());
+  auto rep = archivum::core::migrate_all(*st.value(), {&archivum::punchline::module()});
   if (!rep.ok()) return fail("migrate", rep.status());
-  for (const auto& n : rep.value().applied) std::printf("applied %s\n", n.c_str());
-  std::printf("schema version %llu -> %llu\n", static_cast<unsigned long long>(rep.value().from_version),
-              static_cast<unsigned long long>(rep.value().to_version));
+  for (const auto& [module, r] : rep.value().modules) {
+    for (const auto& n : r.applied) std::printf("applied %s %s\n", module.c_str(), n.c_str());
+    std::printf("%s: version %llu -> %llu\n", module.c_str(), static_cast<unsigned long long>(r.from_version),
+                static_cast<unsigned long long>(r.to_version));
+  }
   return 0;
 }
 
@@ -137,6 +146,59 @@ int cmd_pitr(const std::map<std::string, std::string>& a) {
   return rep.value().target_reached ? 0 : 3;
 }
 
+// Local accounts are created only here, on the host (instructions v2, Q9).
+int cmd_account(const std::string& verb, const std::map<std::string, std::string>& a) {
+  auto vfs = archivum::make_os_vfs();
+  archivum::engine::DbOptions o;
+  o.create_if_missing = false;
+  auto st = archivum::engine::Store::open(*vfs, a.at("--db"), o);
+  if (!st.ok()) return fail("open", st.status());
+  const archivum::core::RecordPolicy policy = archivum::core::build_policy({&archivum::punchline::module()});
+  const std::int64_t now = st.value()->db().now_us();
+  if (verb == "list") {
+    auto rd = st.value()->begin_read();
+    if (!rd.ok()) return fail("read", rd.status());
+    auto list = archivum::core::list_accounts(*rd.value());
+    if (!list.ok()) return fail("list", list.status());
+    for (const auto& acc : list.value()) {
+      std::printf("%s kind=%s enabled=%s expires_at_us=%lld last_used_at_us=%lld\n", acc.username.c_str(), acc.kind.c_str(),
+                  acc.enabled ? "yes" : "no", static_cast<long long>(acc.expires_at), static_cast<long long>(acc.last_used_at));
+    }
+    return 0;
+  }
+  if (!a.count("--username")) return usage();
+  if (verb == "create") {
+    if (!a.count("--kind")) return usage();
+    auto created = archivum::core::create_account(*st.value(), policy, a.at("--username"), a.at("--kind"), now);
+    if (!created.ok()) return fail("account create", created.status());
+    std::printf("account %s created, disabled. Password (shown once, never stored):\n%s\n", a.at("--username").c_str(),
+                created.value().password.c_str());
+    return 0;
+  }
+  if (verb == "enable") {
+    if (!a.count("--hours")) return usage();
+    const long long hours = std::strtoll(a.at("--hours").c_str(), nullptr, 10);
+    if (hours <= 0 || hours > 24 * 7) {
+      std::fprintf(stderr, "account enable: --hours must be 1 to 168\n");
+      return 2;
+    }
+    if (archivum::Status s = archivum::core::enable_account(*st.value(), policy, a.at("--username"), now + hours * 3600LL * 1'000'000LL, now);
+        !s.ok()) {
+      return fail("account enable", s);
+    }
+    std::printf("account %s enabled for %lld hours\n", a.at("--username").c_str(), hours);
+    return 0;
+  }
+  if (verb == "disable") {
+    if (archivum::Status s = archivum::core::disable_account(*st.value(), policy, a.at("--username"), now); !s.ok()) {
+      return fail("account disable", s);
+    }
+    std::printf("account %s disabled\n", a.at("--username").c_str());
+    return 0;
+  }
+  return usage();
+}
+
 int cmd_serve(const std::map<std::string, std::string>& a) {
   auto config = archivum::server::load_config(a.at("--config"));
   if (!config.ok()) {
@@ -172,7 +234,7 @@ int main(int argc, char** argv) {
   const std::string command = argv[1];
   std::map<std::string, std::string> a;
   if (command == "version") {
-    std::printf("archivum 0.0.1 (stage 4)\n");
+    std::printf("archivum 0.0.1 (stage 5)\n");
     return 0;
   }
   if (command == "serve") {
@@ -194,6 +256,12 @@ int main(int argc, char** argv) {
   if (command == "restore") {
     if (!parse(argc, argv, 2, {"--from", "--to", "--discard-log"}, a) || !has_all(a, {"--from", "--to"})) return usage();
     return cmd_restore(a);
+  }
+  if (command == "account") {
+    if (argc < 3) return usage();
+    const std::string verb = argv[2];
+    if (!parse(argc, argv, 3, {"--db", "--username", "--kind", "--hours"}, a) || !has_all(a, {"--db"})) return usage();
+    return cmd_account(verb, a);
   }
   if (command == "pitr") {
     if (!parse(argc, argv, 2, {"--backup", "--archive", "--to", "--live-log", "--change-counter", "--time-us"}, a) ||

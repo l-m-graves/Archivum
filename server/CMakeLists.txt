@@ -16,13 +16,18 @@ find_package(OpenSSL REQUIRED)
 
 add_library(archivum_server STATIC
   src/config.cpp
+  src/log.cpp
+  src/archive.cpp
   src/http/json_bridge.cpp
+  src/http/request.cpp
   src/auth/oidc.cpp
+  src/auth/identity.cpp
+  src/modules/punchline_routes.cpp
   src/app.cpp
 )
 target_include_directories(archivum_server PUBLIC include)
 target_link_libraries(archivum_server
-  PUBLIC archivum_engine Drogon::Drogon jwt-cpp::jwt-cpp nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto
+  PUBLIC archivum_engine archivum_core archivum_punchline Drogon::Drogon jwt-cpp::jwt-cpp nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto
   PRIVATE archivum_warnings)
 if(ARCHIVUM_PRODUCTION_BUILD)
   target_compile_definitions(archivum_server PUBLIC ARCHIVUM_PRODUCTION_BUILD=1)
@@ -31,4 +36,4 @@ else()
 endif()
 
 add_executable(archivum src/main.cpp)
-target_link_libraries(archivum PRIVATE archivum_server archivum_punchline archivum_warnings)
+target_link_libraries(archivum PRIVATE archivum_server archivum_core archivum_punchline archivum_warnings)

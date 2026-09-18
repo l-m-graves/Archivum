@@ -88,6 +88,7 @@ ARCHIVUM_TEST(healthz_reports_certificate_and_jwks_state) {
   CHECK(body["tls"]["days_remaining"].get<int>() >= 398);
   CHECK(body["tls"]["warn_30_days"] == false);
   CHECK(body["oidc"]["jwks_keys"] == 1);
+  CHECK(body["database"]["schema_version"] == 2);
 }
 
 ARCHIVUM_TEST(whoami_without_token_is_401) {
@@ -269,8 +270,33 @@ ARCHIVUM_TEST(config_fails_closed) {
       {"oidc",
        {{"issuer", "https://login.example.test/tid/v2.0"},
         {"audience", "api://archivum"},
-        {"discovery_url", "https://login.example.test/tid/v2.0/.well-known/openid-configuration"}}}};
+        {"discovery_url", "https://login.example.test/tid/v2.0/.well-known/openid-configuration"}}},
+      {"database", {{"path", f.dir + "/x.db"}, {"archive_dir", f.dir + "/archive"}}},
+      {"backup", {{"destination", f.dir + "/offhost"}, {"archive_cadence_seconds", 300}}}};
   REQUIRE_OK(parse_config(ok_json.dump()).status());
+
+  // Q8: no off-host destination or cadence, no server.
+  auto no_backup = ok_json;
+  no_backup.erase("backup");
+  CHECK_MSG(!parse_config(no_backup.dump()).ok(), "backup section must be required");
+  auto no_dest = ok_json;
+  no_dest["backup"].erase("destination");
+  CHECK(!parse_config(no_dest.dump()).ok());
+  auto no_cadence = ok_json;
+  no_cadence["backup"].erase("archive_cadence_seconds");
+  CHECK(!parse_config(no_cadence.dump()).ok());
+  auto zero_cadence = ok_json;
+  zero_cadence["backup"]["archive_cadence_seconds"] = 0;
+  CHECK(!parse_config(zero_cadence.dump()).ok());
+  auto same_dir = ok_json;
+  same_dir["backup"]["destination"] = f.dir + "/archive";
+  CHECK_MSG(!parse_config(same_dir.dump()).ok(), "the off-host copy must not be the archive itself");
+  auto no_db = ok_json;
+  no_db.erase("database");
+  CHECK(!parse_config(no_db.dump()).ok());
+  auto bad_level = ok_json;
+  bad_level["logging"] = {{"level", "debug"}};
+  CHECK(!parse_config(bad_level.dump()).ok());
 
   auto no_tls = ok_json;
   no_tls.erase("tls");

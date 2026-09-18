@@ -75,46 +75,6 @@ TableDef employees() {
   return t;
 }
 
-// Elevated roles keyed on the Entra principal, never on email. Supervisor
-// and payroll are separate grants; the segregation-of-duties report lists
-// principals holding both.
-TableDef role_grants() {
-  TableDef t;
-  t.name = "role_grants";
-  t.columns = {col("id", ColumnType::Integer),
-               col("tid", ColumnType::Text),
-               col("oid", ColumnType::Text),
-               col("role", ColumnType::Text),
-               col("granted_by", ColumnType::Text),
-               col("granted_at", ColumnType::Timestamp)};
-  t.primary_key = {"id"};
-  t.indexes = {index("role_grants_principal", {"tid", "oid", "role"}, true), index("role_grants_role", {"role"})};
-  t.checks = {one_of("role_grants_role_known", "role", {"supervisor", "payroll", "admin"}),
-              non_empty("role_grants_tid_nonempty", "tid"), non_empty("role_grants_oid_nonempty", "oid")};
-  return t;
-}
-
-// Local accounts: the break-glass administrator (disabled by default,
-// created by a host console command, expiring) and device administration.
-// The verifier is an Argon2id hash; the schema stores bytes only.
-TableDef local_accounts() {
-  TableDef t;
-  t.name = "local_accounts";
-  t.columns = {col("id", ColumnType::Integer),
-               col("username", ColumnType::Text),
-               col("kind", ColumnType::Text),
-               col("verifier", ColumnType::Blob),
-               col("enabled", ColumnType::Boolean),
-               col("created_at", ColumnType::Timestamp),
-               col("expires_at", ColumnType::Timestamp, true),
-               col("last_used_at", ColumnType::Timestamp, true)};
-  t.primary_key = {"id"};
-  t.indexes = {index("local_accounts_username", {"username"}, true)};
-  t.checks = {one_of("local_accounts_kind_known", "kind", {"break_glass", "device_admin"}),
-              non_empty("local_accounts_username_nonempty", "username")};
-  return t;
-}
-
 // One device, one credential, one employee. Revocation keeps the row (the
 // audit trail references it) and sets revoked_at; enrollment logic keeps
 // at most one unrevoked device per employee.
@@ -159,6 +119,44 @@ TableDef pay_periods() {
   return t;
 }
 
+// Who reports to whom, effective-dated: an approval is evaluated against
+// the assignment in force at the time of the action, not the current one.
+// The supervisor is an employee row (one who holds the supervisor role
+// through role_grants on their identity). No overlap per employee is a
+// module rule (docs/punchline-schema.md).
+TableDef supervisor_assignments() {
+  TableDef t;
+  t.name = "supervisor_assignments";
+  t.columns = {col("id", ColumnType::Integer),
+               col("employee_id", ColumnType::Integer),
+               col("supervisor_employee_id", ColumnType::Integer),
+               col("effective_from", ColumnType::Timestamp),
+               col("effective_to", ColumnType::Timestamp, true),
+               col("assigned_by", ColumnType::Text),
+               col("audit_id", ColumnType::Integer)};
+  t.primary_key = {"id"};
+  t.indexes = {index("supervisor_assignments_employee", {"employee_id", "effective_from"}),
+               index("supervisor_assignments_supervisor", {"supervisor_employee_id", "effective_from"}),
+               index("supervisor_assignments_audit", {"audit_id"})};
+  t.foreign_keys = {fk("supervisor_assignments_employee_fk", {"employee_id"}, "employees", {"id"}),
+                    fk("supervisor_assignments_supervisor_fk", {"supervisor_employee_id"}, "employees", {"id"}),
+                    fk("supervisor_assignments_audit_fk", {"audit_id"}, "audit_log", {"id"})};
+  t.checks = {non_empty("supervisor_assignments_by_nonempty", "assigned_by")};
+  return t;
+}
+
+// Pay codes as a lookup table so an entry's code is engine-enforced.
+// Seeded by the migration; multipliers are configuration, not schema.
+TableDef pay_codes() {
+  TableDef t;
+  t.name = "pay_codes";
+  t.columns = {col("code", ColumnType::Text), col("description", ColumnType::Text), col("paid", ColumnType::Boolean),
+               col("active", ColumnType::Boolean)};
+  t.primary_key = {"code"};
+  t.checks = {non_empty("pay_codes_code_nonempty", "code")};
+  return t;
+}
+
 // Weekly schedules, HR-sourced, nullable in effect: an employee with no
 // row is flagged "no schedule on file" rather than checked.
 TableDef schedules() {
@@ -177,30 +175,6 @@ TableDef schedules() {
   t.checks = {at_least("schedules_weekday_min", "weekday", 0), at_most("schedules_weekday_max", "weekday", 6),
               at_least("schedules_start_min", "start_minute", 0), at_most("schedules_start_max", "start_minute", 1439),
               at_least("schedules_end_min", "end_minute", 0), at_most("schedules_end_max", "end_minute", 1440)};
-  return t;
-}
-
-// The audit log. The audit writer decides per field what is recordable
-// (docs/confidentiality-check.md); the schema stores what it was given.
-TableDef audit_log() {
-  TableDef t;
-  t.name = "audit_log";
-  t.columns = {col("id", ColumnType::Integer),
-               col("at", ColumnType::Timestamp),
-               col("actor_tid", ColumnType::Text, true),
-               col("actor_oid", ColumnType::Text, true),
-               col("actor_account", ColumnType::Text, true),
-               col("device_id", ColumnType::Integer, true),
-               col("action", ColumnType::Text),
-               col("target_table", ColumnType::Text),
-               col("target_id", ColumnType::Text),
-               col("fields", ColumnType::Text, true),
-               col("request_id", ColumnType::Text, true)};
-  t.primary_key = {"id"};
-  t.indexes = {index("audit_log_at", {"at"}), index("audit_log_target", {"target_table", "target_id"}),
-               index("audit_log_device", {"device_id"})};
-  t.foreign_keys = {fk("audit_log_device_fk", {"device_id"}, "devices", {"id"})};
-  t.checks = {non_empty("audit_log_action_nonempty", "action")};
   return t;
 }
 
@@ -241,11 +215,14 @@ TableDef time_entries() {
                index("time_entries_state", {"state"}),
                index("time_entries_correction", {"correction_of"}),
                index("time_entries_approval", {"approval_audit_id"})};
+  t.indexes.push_back(index("time_entries_pay_code", {"pay_code"}));
+  t.indexes.push_back(index("time_entries_attestation", {"attestation", "device_time"}));
   t.foreign_keys = {fk("time_entries_employee_fk", {"employee_id"}, "employees", {"id"}),
                     fk("time_entries_device_fk", {"device_id"}, "devices", {"id"}),
                     fk("time_entries_period_fk", {"period_id"}, "pay_periods", {"id"}),
                     fk("time_entries_approval_fk", {"approval_audit_id"}, "audit_log", {"id"}),
-                    fk("time_entries_correction_fk", {"correction_of"}, "time_entries", {"id"})};
+                    fk("time_entries_correction_fk", {"correction_of"}, "time_entries", {"id"}),
+                    fk("time_entries_pay_code_fk", {"pay_code"}, "pay_codes", {"code"})};
   t.checks = {one_of("time_entries_kind_known", "kind", {"in", "out"}),
               one_of("time_entries_attestation_known", "attestation", {"device", "server", "manual"}),
               one_of("time_entries_state_known", "state", kEntryStates),
@@ -334,9 +311,19 @@ TableDef exceptions() {
 }
 
 Status apply_v1(Writer& w) {
-  for (const TableDef& t : {employees(), role_grants(), local_accounts(), devices(), pay_periods(), schedules(),
-                            audit_log(), time_entries(), sync_batches(), approvals(), exceptions()}) {
+  // audit_log belongs to the core module and must already exist.
+  if (w.catalog().table("audit_log") == nullptr) return Status::invalid_argument("core schema must be applied first");
+  for (const TableDef& t : {employees(), devices(), pay_periods(), supervisor_assignments(), pay_codes(), schedules(),
+                            time_entries(), sync_batches(), approvals(), exceptions()}) {
     if (Status s = w.create_table(t); !s.ok()) return s;
+  }
+  for (const auto& [code, description] : std::vector<std::pair<const char*, const char*>>{
+           {"regular", "Regular hours"}, {"overtime", "Overtime"}, {"double_time", "Double time"},
+           {"pto", "Paid time off"}, {"holiday", "Holiday"}}) {
+    if (Status s = w.insert("pay_codes", {Value::text(code), Value::text(description), Value::boolean(true), Value::boolean(true)});
+        !s.ok()) {
+      return s;
+    }
   }
   return Status();
 }
@@ -344,9 +331,9 @@ Status apply_v1(Writer& w) {
 }  // namespace
 
 const std::vector<std::string>& v1_tables() {
-  static const std::vector<std::string> names = {"employees",   "role_grants",  "local_accounts", "devices",
-                                                 "pay_periods", "schedules",    "audit_log",      "time_entries",
-                                                 "sync_batches", "approvals",   "exceptions"};
+  static const std::vector<std::string> names = {"employees",   "devices",      "pay_periods", "supervisor_assignments",
+                                                 "pay_codes",   "schedules",    "time_entries", "sync_batches",
+                                                 "approvals",   "exceptions"};
   return names;
 }
 
@@ -355,6 +342,30 @@ const std::vector<Migration>& migrations() {
       Migration{1, "punchline_v1_schema", &apply_v1},
   };
   return list;
+}
+
+void Module::extend_policy(core::RecordPolicy& p) const {
+  p.allow("employees", {"id", "employee_number", "display_name", "email", "tid", "oid", "active", "pay_group", "site_zone",
+                        "created_at", "updated_at"});
+  p.allow("devices", {"id", "device_uuid", "name", "employee_id", "enrolled_at", "enrolled_by", "revoked_at", "revoked_reason",
+                      "last_seen_at", "last_acked_sequence"});
+  p.allow("pay_periods", {"id", "start_day", "end_day", "site_zone", "tzdb_version", "state", "submit_by", "approve_by", "release_at"});
+  p.allow("supervisor_assignments", {"id", "employee_id", "supervisor_employee_id", "effective_from", "effective_to", "assigned_by", "audit_id"});
+  p.allow("pay_codes", {"code", "description", "paid", "active"});
+  p.allow("schedules", {"id", "employee_id", "weekday", "start_minute", "end_minute", "effective_from_day", "effective_to_day"});
+  p.allow("time_entries", {"id", "entry_uuid", "employee_id", "device_id", "journal_sequence", "kind", "device_time", "local_time",
+                           "site_zone", "tzdb_version", "receipt_time", "attestation", "clock_divergence_us", "period_id", "state",
+                           "pay_code", "approval_audit_id", "correction_of", "created_at"});
+  p.allow("sync_batches", {"id", "batch_uuid", "device_id", "received_at", "first_sequence", "last_sequence", "accepted", "rejected"});
+  p.allow("approvals", {"id", "period_id", "employee_id", "from_state", "to_state", "acted_by_tid", "acted_by_oid", "acted_by_account",
+                        "acted_at", "audit_id"});
+  p.allow("exceptions", {"id", "kind", "state", "employee_id", "device_id", "entry_id", "period_id", "opened_at", "resolved_at",
+                         "resolved_by", "resolution_audit_id"});
+}
+
+const Module& module() {
+  static const Module m;
+  return m;
 }
 
 }  // namespace archivum::punchline

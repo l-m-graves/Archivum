@@ -9,6 +9,10 @@
 #include <openssl/x509.h>
 
 #include "../src/http/json_bridge.h"
+#include "../src/http/request.h"
+#include "archivum/core/authz.h"
+#include "archivum/core/schema.h"
+#include "archivum/engine/migrate.h"
 
 namespace archivum::server {
 
@@ -51,36 +55,64 @@ std::vector<std::pair<std::string, std::string>> tls_conf_commands(const TlsConf
   return cmds;
 }
 
-App::App(Config config) : config_(std::move(config)) {}
+App::App(Config config, std::vector<ServerModule> modules) : config_(std::move(config)), modules_(std::move(modules)) {}
+
+App::~App() {
+  if (shipper_) shipper_->stop();
+  if (store_) (void)store_->close();
+}
 
 Status App::configure() {
+  auto logger = Logger::open(config_.logging.file, config_.logging.level);
+  if (!logger.ok()) return logger.status();
+  set_logger(logger.value());
+
   auto cert = read_certificate_info(config_.tls.certificate_pem);
   if (!cert.ok()) return cert.status();
   cert_ = cert.value();
   validator_ = std::make_shared<OidcValidator>(config_.oidc);
+
+  // The store: open, migrate every module, build the record policy once.
+  vfs_ = make_os_vfs();
+  engine::DbOptions dbo;
+  dbo.archive_dir = config_.database.archive_dir;
+  dbo.now_us = clock_;
+  auto st = engine::Store::open(*vfs_, config_.database.path, dbo);
+  if (!st.ok()) return st.status();
+  store_ = std::move(st.value());
+  std::vector<const core::Module*> data_modules;
+  for (const ServerModule& m : modules_) data_modules.push_back(m.data);
+  auto schema = core::migrate_all(*store_, data_modules);
+  if (!schema.ok()) return schema.status();
+  for (const auto& [name, rep] : schema.value().modules) {
+    for (const auto& step : rep.applied) log(LogLevel::Info, "schema.migrated", {{"module", name}, {"step", step}});
+  }
+  policy_ = core::build_policy(data_modules);
+  auth_ = std::make_unique<Authenticator>(*store_, validator_, policy_);
+  shipper_ = std::make_unique<ArchiveShipper>(*vfs_, *store_, config_.database, config_.backup);
 
   auto& app = drogon::app();
   app.setLogLevel(trantor::Logger::kWarn);
   if (config_.io_threads != 0) app.setThreadNum(config_.io_threads);
   app.setIdleConnectionTimeout(60);
   app.setClientMaxBodySize(1024 * 1024);
-  // The TLS policy is set globally rather than per listener: unpatched
-  // Drogon 1.9.13 drops per-listener SSL commands on Windows (see
-  // docs/stage1-report.md), and the server has one policy anyway.
   app.setSSLFiles(config_.tls.certificate_pem, config_.tls.private_key_pem);
   app.setSSLConfigCommands(tls_conf_commands(config_.tls));
   app.addListener(config_.listen_address, config_.listen_port, /*useSSL=*/true);
 
-  auto validator = validator_;
+  App* self = this;
   const CertificateInfo cert_info = cert_;
   app.registerHandler(
       "/healthz",
-      [validator, cert_info](drogon::HttpRequestPtr) -> drogon::Task<drogon::HttpResponsePtr> {
+      [self, cert_info](drogon::HttpRequestPtr) -> drogon::Task<drogon::HttpResponsePtr> {
+        const std::string request_id = new_request_id();
         const auto now = std::chrono::system_clock::now();
         const auto remaining = std::chrono::duration_cast<std::chrono::hours>(cert_info.not_after - now);
-        const auto snap = validator->snapshot();
+        const auto snap = self->validator()->snapshot();
+        const std::int64_t now_us = self->now_us();
+        const ShipStatus ship = self->shipper().status();
+        const std::string archive_reason = self->shipper().unhealthy_reason(now_us);
         nlohmann::json body;
-        body["status"] = "ok";
         body["tls"]["certificate_subject"] = cert_info.subject;
         body["tls"]["not_after_unix"] = std::chrono::system_clock::to_time_t(cert_info.not_after);
         body["tls"]["days_remaining"] = remaining.count() / 24;
@@ -90,35 +122,112 @@ Status App::configure() {
         body["oidc"]["jwks_fetched_unix"] = std::chrono::system_clock::to_time_t(snap.fetched_at);
         body["oidc"]["jwks_refreshes"] = snap.refreshes;
         body["oidc"]["jwks_refreshes_suppressed"] = snap.refreshes_suppressed;
-        co_return json_response(body, drogon::k200OK);
+        {
+          auto rd = self->store().begin_read();
+          if (rd.ok()) {
+            body["database"]["schema_version"] = rd.value()->catalog().schema_version;
+            body["database"]["tables"] = rd.value()->catalog().tables.size();
+          }
+          const auto stats = self->store().db().stats();
+          body["database"]["wal_frames"] = stats.wal_frames;
+          body["database"]["checkpoints"] = stats.checkpoints;
+          body["database"]["archived_segments"] = stats.archived_segments;
+        }
+        body["archive"]["destination"] = self->config().backup.destination;
+        body["archive"]["last_success_us"] = ship.last_success_us;
+        body["archive"]["last_attempt_us"] = ship.last_attempt_us;
+        body["archive"]["segments_shipped"] = ship.segments_shipped;
+        body["archive"]["backups_shipped"] = ship.backups_shipped;
+        body["archive"]["failures"] = ship.failures;
+        body["archive"]["ok"] = archive_reason.empty();
+        if (!archive_reason.empty()) body["archive"]["problem"] = archive_reason;
+        body["status"] = archive_reason.empty() ? "ok" : "failing";
+        co_return ok_response(body, request_id, archive_reason.empty() ? 200 : 503);
       },
       {drogon::Get});
 
   app.registerHandler(
       "/api/v1/whoami",
-      [validator](drogon::HttpRequestPtr req) -> drogon::Task<drogon::HttpResponsePtr> {
-        auto who = co_await validator->authenticate(req->getHeader("authorization"));
+      [self](drogon::HttpRequestPtr req) -> drogon::Task<drogon::HttpResponsePtr> {
+        const std::string request_id = new_request_id();
+        auto who = co_await self->authenticator().authenticate(req, request_id);
         if (!who.ok()) {
-          nlohmann::json err;
-          err["error"] = "unauthorized";
-          // The reason is logged, never returned: a caller learns only that
-          // the token was rejected.
-          LOG_WARN << "whoami rejected: " << who.status().to_string();
-          auto resp = json_response(err, drogon::k401Unauthorized);
-          resp->addHeader("WWW-Authenticate", "Bearer");
+          const AuthFailure f = Authenticator::failure_of(who.status());
+          log(LogLevel::Warn, "auth.rejected", {{"request_id", request_id}, {"route", "whoami"}, {"reason", f.reason}});
+          auto resp = error_response(f.http_status, f.http_status == 403 ? "forbidden" : "unauthorized",
+                                     f.http_status == 403 ? "no standing" : "credential rejected", request_id);
+          if (f.http_status == 401) resp->addHeader("WWW-Authenticate", "Bearer");
           co_return resp;
         }
-        const Principal& p = who.value();
+        const Caller& c = who.value();
         nlohmann::json body;
-        body["oid"] = p.oid;
-        body["tid"] = p.tid;
-        body["sub"] = p.subject;
-        body["preferred_username"] = p.preferred_username;
-        body["email"] = p.email;
-        body["kid"] = p.key_id;
-        co_return json_response(body, drogon::k200OK);
+        body["kind"] = c.kind == Caller::Kind::Principal ? "principal" : (c.kind == Caller::Kind::Device ? "device" : "account");
+        body["oid"] = c.principal.oid;
+        body["tid"] = c.principal.tid;
+        body["sub"] = c.principal.subject;
+        body["preferred_username"] = c.principal.preferred_username;
+        body["email"] = c.principal.email;
+        body["kid"] = c.principal.key_id;
+        body["roles"] = c.roles;
+        if (c.employee_id) body["employee_id"] = *c.employee_id;
+        if (c.kind == Caller::Kind::Account) body["account"] = c.account;
+        co_return ok_response(body, request_id);
       },
       {drogon::Get});
+
+  // Roles as data: grant and revoke, admin only, audited through the recorder.
+  app.registerHandler(
+      "/api/v1/admin/roles",
+      [self](drogon::HttpRequestPtr req) -> drogon::Task<drogon::HttpResponsePtr> {
+        const std::string request_id = new_request_id();
+        auto body = parse_body(req, {"tid", "oid", "role"});
+        if (!body.ok()) co_return status_response(body.status(), request_id);
+        auto who = co_await self->authenticator().authenticate(req, request_id);
+        if (!who.ok()) co_return error_response(Authenticator::failure_of(who.status()).http_status, "unauthorized", "credential rejected", request_id);
+        if (!who.value().has_role("admin")) co_return error_response(403, "forbidden", "admin role required", request_id);
+        auto tid = body_string(body.value(), "tid"), oid = body_string(body.value(), "oid"), role = body_string(body.value(), "role");
+        for (const auto* r : {&tid, &oid, &role}) {
+          if (!r->ok()) co_return status_response(r->status(), request_id);
+        }
+        auto w = self->store().begin_write();
+        if (!w.ok()) co_return status_response(w.status(), request_id);
+        core::Recorder rec(*w.value(), self->policy(), who.value().actor(), "role.grant", self->now_us());
+        if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
+        auto id = core::grant_role(rec, tid.value(), oid.value(), role.value(), who.value().describe(), self->now_us());
+        if (!id.ok()) co_return status_response(id.status(), request_id);
+        if (Status s = rec.set_target(core::kRoleGrants, std::to_string(id.value())); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = w.value()->commit(); !s.ok()) co_return status_response(s, request_id);
+        log(LogLevel::Info, "role.granted", {{"request_id", request_id}, {"by", who.value().describe()}, {"role", role.value()}, {"oid", oid.value()}});
+        co_return ok_response({{"id", id.value()}}, request_id, 201);
+      },
+      {drogon::Post});
+
+  app.registerHandler(
+      "/api/v1/admin/roles/{id}/revoke",
+      [self](drogon::HttpRequestPtr req, std::string id_text) -> drogon::Task<drogon::HttpResponsePtr> {
+        const std::string request_id = new_request_id();
+        auto body = parse_body(req, {});
+        if (!body.ok()) co_return status_response(body.status(), request_id);
+        auto who = co_await self->authenticator().authenticate(req, request_id);
+        if (!who.ok()) co_return error_response(Authenticator::failure_of(who.status()).http_status, "unauthorized", "credential rejected", request_id);
+        if (!who.value().has_role("admin")) co_return error_response(403, "forbidden", "admin role required", request_id);
+        char* end = nullptr;
+        const long long id = std::strtoll(id_text.c_str(), &end, 10);
+        if (end == nullptr || *end != '\0' || id <= 0) co_return error_response(400, "invalid", "bad grant id", request_id);
+        auto w = self->store().begin_write();
+        if (!w.ok()) co_return status_response(w.status(), request_id);
+        core::Recorder rec(*w.value(), self->policy(), who.value().actor(), "role.revoke", self->now_us());
+        if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
+        if (Status s = core::revoke_role(rec, id); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = rec.set_target(core::kRoleGrants, std::to_string(id)); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = w.value()->commit(); !s.ok()) co_return status_response(s, request_id);
+        co_return ok_response({{"id", id}}, request_id);
+      },
+      {drogon::Post});
+
+  for (const ServerModule& m : modules_) {
+    if (m.register_routes) m.register_routes(*this);
+  }
   return Status();
 }
 
@@ -128,13 +237,7 @@ Status App::run(std::function<void()> ready) {
   auto& app = drogon::app();
   init_status_ = Status();
   app.getLoop()->queueInLoop([this, ready]() {
-    // Runs on the app loop once it is live. Initialise auth before anything
-    // is served; if it fails, stop.
     [](App* self, std::function<void()> ready_cb) -> drogon::AsyncTask {
-      // Listeners are bound asynchronously on the IO loops, and the issuer
-      // may be a local test issuer on this very process, so a connection
-      // failure in the first seconds is retried. Any other failure (bad
-      // certificate, wrong issuer, malformed keys) is final.
       Status s;
       for (int attempt = 0; attempt < 50; ++attempt) {
         co_await drogon::sleepCoro(drogon::app().getLoop(), std::chrono::milliseconds(attempt == 0 ? 50 : 100));
@@ -146,14 +249,17 @@ Status App::run(std::function<void()> ready) {
       }
       if (!s.ok()) {
         self->init_status_ = s;
-        LOG_ERROR << "OIDC initialisation failed: " << s.to_string();
+        log(LogLevel::Error, "oidc.init_failed", {{"error", s.to_string()}});
         drogon::app().quit();
         co_return;
       }
+      self->shipper().start();
+      log(LogLevel::Info, "server.ready", {{"address", self->config().listen_address}, {"port", self->config().listen_port}});
       if (ready_cb) ready_cb();
     }(this, ready);
   });
   app.run();
+  if (shipper_) shipper_->stop();
   return init_status_;
 }
 

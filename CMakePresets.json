@@ -35,6 +35,13 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
     },
     {
+      "name": "linux-tsan",
+      "inherits": "linux-base",
+      "displayName": "Linux Debug (GCC, ThreadSanitizer, every port instrumented)",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "ARCHIVUM_TSAN": "ON",
+                          "VCPKG_TARGET_TRIPLET": "x64-linux-cxx20-tsan" }
+    },
+    {
       "name": "windows",
       "inherits": "vcpkg-base",
       "displayName": "Windows (MSVC 2022, x64, static CRT, multi-config)",
@@ -50,12 +57,15 @@
   "buildPresets": [
     { "name": "linux-debug", "configurePreset": "linux-debug" },
     { "name": "linux-release", "configurePreset": "linux-release" },
+    { "name": "linux-tsan", "configurePreset": "linux-tsan" },
     { "name": "windows-debug", "configurePreset": "windows", "configuration": "Debug" },
     { "name": "windows-release", "configurePreset": "windows", "configuration": "RelWithDebInfo" }
   ],
   "testPresets": [
     { "name": "linux-debug", "configurePreset": "linux-debug", "output": { "outputOnFailure": true } },
     { "name": "linux-release", "configurePreset": "linux-release", "output": { "outputOnFailure": true } },
+    { "name": "linux-tsan", "configurePreset": "linux-tsan", "output": { "outputOnFailure": true },
+      "filter": { "include": { "label": "concurrency" } } },
     { "name": "windows-debug", "configurePreset": "windows", "configuration": "Debug", "output": { "outputOnFailure": true } },
     { "name": "windows-release", "configurePreset": "windows", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } }
   ]

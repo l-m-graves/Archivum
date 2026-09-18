@@ -32,12 +32,34 @@ struct OidcConfig {
   std::uint32_t jwks_default_max_age_seconds = 3600;      // when the endpoint sends no cache headers
 };
 
+struct DatabaseConfig {
+  std::string path;         // the operational database file
+  std::string archive_dir;  // log archive directory (docs/backup-recovery.md); required
+};
+
+// Off-host copies (instructions v2, Q8). Both are required: a deployment
+// with no destination or no cadence does not start, and the health check
+// fails until the first successful copy.
+struct BackupConfig {
+  std::string destination;                     // directory, typically a mounted share or UNC path
+  std::uint32_t archive_cadence_seconds = 0;   // how often archived log segments are copied
+  std::uint32_t backup_cadence_seconds = 86400;  // how often a full backup is taken and copied
+};
+
+struct LoggingConfig {
+  std::string level = "info";  // info | warn | error
+  std::string file;            // empty: stderr; JSON lines either way
+};
+
 struct Config {
   std::string listen_address = "0.0.0.0";
   std::uint16_t listen_port = 8443;
   std::uint32_t io_threads = 0;  // 0: hardware concurrency
   TlsConfig tls;
   OidcConfig oidc;
+  DatabaseConfig database;
+  BackupConfig backup;
+  LoggingConfig logging;
   // Forwarded headers (X-Forwarded-For) are honoured only from these addresses.
   std::vector<std::string> trusted_proxies;
 };

@@ -8,11 +8,13 @@ namespace {
 TableDef migrations_table() {
   TableDef t;
   t.name = kMigrationsTable;
-  t.columns = {{"version", ColumnType::Integer, false, 0},
+  t.columns = {{"module", ColumnType::Text, false, 0},
+               {"version", ColumnType::Integer, false, 0},
                {"name", ColumnType::Text, false, 0},
                {"applied_at", ColumnType::Timestamp, false, 0}};
-  t.primary_key = {"version"};
-  t.checks = {{"name_nonempty", "name", CheckOp::Ne, {Value::text("")}}};
+  t.primary_key = {"module", "version"};
+  t.checks = {{"name_nonempty", "name", CheckOp::Ne, {Value::text("")}},
+              {"module_nonempty", "module", CheckOp::Ne, {Value::text("")}}};
   return t;
 }
 
@@ -33,36 +35,34 @@ Status validate_migrations(const std::vector<Migration>& migrations) {
   return Status();
 }
 
-Result<MigrationReport> migrate(Store& store, const std::vector<Migration>& migrations) {
+Result<std::vector<std::pair<std::uint64_t, std::string>>> applied_migrations(Reader& reader, const std::string& module) {
+  std::vector<std::pair<std::uint64_t, std::string>> out;
+  if (reader.catalog().table(kMigrationsTable) == nullptr) return out;
+  auto rows = reader.scan_all(kMigrationsTable, "", Bound{{Value::text(module)}}, Bound{{Value::text(module)}});
+  if (!rows.ok()) return rows.status();
+  for (const Row& r : rows.value()) out.emplace_back(static_cast<std::uint64_t>(r[1].as_int64()), r[2].as_text());
+  return out;
+}
+
+Result<MigrationReport> migrate(Store& store, const std::string& module, const std::vector<Migration>& migrations) {
+  if (module.empty()) return Status::invalid_argument("migration module needs a name");
   if (Status s = validate_migrations(migrations); !s.ok()) return s;
   MigrationReport rep;
   {
     auto r = store.begin_read();
     if (!r.ok()) return r.status();
-    const Catalog& cat = r.value()->catalog();
-    rep.from_version = cat.schema_version;
-    rep.to_version = cat.schema_version;
-    if (cat.schema_version > migrations.size()) {
-      return Status::unsupported("database schema version " + std::to_string(cat.schema_version) +
-                                 " is newer than this binary's " + std::to_string(migrations.size()));
+    auto applied = applied_migrations(*r.value(), module);
+    if (!applied.ok()) return applied.status();
+    rep.from_version = applied.value().size();
+    rep.to_version = rep.from_version;
+    if (applied.value().size() > migrations.size()) {
+      return Status::unsupported("database has " + std::to_string(applied.value().size()) + " migrations of " + module +
+                                 ", newer than this binary's " + std::to_string(migrations.size()));
     }
-    if (cat.schema_version > 0) {
-      if (cat.table(kMigrationsTable) == nullptr) {
-        return Status::corrupt("schema version " + std::to_string(cat.schema_version) + " but no " +
-                               std::string(kMigrationsTable) + " table");
-      }
-      auto rows = r.value()->scan_all(kMigrationsTable);
-      if (!rows.ok()) return rows.status();
-      if (rows.value().size() != cat.schema_version) {
-        return Status::corrupt(std::string(kMigrationsTable) + " has " + std::to_string(rows.value().size()) +
-                               " rows for schema version " + std::to_string(cat.schema_version));
-      }
-      for (std::size_t i = 0; i < rows.value().size(); ++i) {
-        const Row& row = rows.value()[i];
-        if (row[0].as_int64() != static_cast<std::int64_t>(i + 1) || row[1].as_text() != migrations[i].name) {
-          return Status::corrupt("migration " + std::to_string(i + 1) + " recorded as '" + row[1].to_string() +
-                                 "', this binary has '" + migrations[i].name + "'");
-        }
+    for (std::size_t i = 0; i < applied.value().size(); ++i) {
+      if (applied.value()[i].first != i + 1 || applied.value()[i].second != migrations[i].name) {
+        return Status::corrupt("migration " + module + " " + std::to_string(i + 1) + " recorded as '" +
+                               applied.value()[i].second + "', this binary has '" + migrations[i].name + "'");
       }
     }
   }
@@ -71,17 +71,18 @@ Result<MigrationReport> migrate(Store& store, const std::vector<Migration>& migr
     auto w = store.begin_write();
     if (!w.ok()) return w.status();
     Writer& writer = *w.value();
-    if (writer.catalog().schema_version != m.version - 1) {
-      return Status::busy("schema changed underneath the migration");
-    }
     if (writer.catalog().table(kMigrationsTable) == nullptr) {
       if (Status s = writer.create_table(migrations_table()); !s.ok()) return s;
     }
-    if (Status s = m.apply(writer); !s.ok()) return Status(s.code(), "migration " + m.name + ": " + s.message());
-    Row row = {Value::integer(static_cast<std::int64_t>(m.version)), Value::text(m.name),
+    // Another writer may have applied this step between our read and now.
+    auto now_applied = applied_migrations(writer, module);
+    if (!now_applied.ok()) return now_applied.status();
+    if (now_applied.value().size() != m.version - 1) return Status::busy("schema changed underneath the migration");
+    if (Status s = m.apply(writer); !s.ok()) return Status(s.code(), "migration " + module + " " + m.name + ": " + s.message());
+    Row row = {Value::text(module), Value::integer(static_cast<std::int64_t>(m.version)), Value::text(m.name),
                Value::timestamp(store.db().now_us())};
     if (Status s = writer.insert(kMigrationsTable, row); !s.ok()) return s;
-    if (Status s = writer.set_schema_version(m.version); !s.ok()) return s;
+    if (Status s = writer.set_schema_version(writer.catalog().schema_version + 1); !s.ok()) return s;
     if (Status s = writer.commit(); !s.ok()) return s;
     rep.applied.push_back(m.name);
     rep.to_version = m.version;

@@ -85,7 +85,8 @@ Result<Config> parse_config(const std::string& json_text) {
     return Status::invalid_argument(std::string("config is not valid JSON: ") + e.what());
   }
   Config c;
-  if (Status s = expect_keys(root, "config", {"listen", "tls", "oidc", "trusted_proxies"}); !s.ok()) {
+  if (Status s = expect_keys(root, "config", {"listen", "tls", "oidc", "database", "backup", "logging", "trusted_proxies"});
+      !s.ok()) {
     return s;
   }
 
@@ -170,6 +171,46 @@ Result<Config> parse_config(const std::string& json_text) {
       return Status::invalid_argument("test issuer refused in a production build");
     }
 #endif
+  }
+
+  if (!root.contains("database")) return Status::invalid_argument("database section is required");
+  {
+    const json& d = root["database"];
+    if (Status s = expect_keys(d, "database", {"path", "archive_dir"}); !s.ok()) return s;
+    if (Status s = get_req(d, "path", "database", c.database.path); !s.ok()) return s;
+    if (Status s = get_req(d, "archive_dir", "database", c.database.archive_dir); !s.ok()) return s;
+  }
+
+  // Fail closed: no off-host destination or cadence, no server (Q8).
+  if (!root.contains("backup")) {
+    return Status::invalid_argument("backup section is required: destination and archive_cadence_seconds");
+  }
+  {
+    const json& b = root["backup"];
+    if (Status s = expect_keys(b, "backup", {"destination", "archive_cadence_seconds", "backup_cadence_seconds"}); !s.ok()) {
+      return s;
+    }
+    if (Status s = get_req(b, "destination", "backup", c.backup.destination); !s.ok()) return s;
+    if (!b.contains("archive_cadence_seconds")) {
+      return Status::invalid_argument("backup.archive_cadence_seconds is required");
+    }
+    if (Status s = get_opt(b, "archive_cadence_seconds", "backup", c.backup.archive_cadence_seconds); !s.ok()) return s;
+    if (Status s = get_opt(b, "backup_cadence_seconds", "backup", c.backup.backup_cadence_seconds); !s.ok()) return s;
+    if (c.backup.archive_cadence_seconds == 0) return Status::invalid_argument("backup.archive_cadence_seconds must be positive");
+    if (c.backup.backup_cadence_seconds == 0) return Status::invalid_argument("backup.backup_cadence_seconds must be positive");
+    if (c.backup.destination == c.database.archive_dir) {
+      return Status::invalid_argument("backup.destination must differ from database.archive_dir: it is the off-host copy");
+    }
+  }
+
+  if (root.contains("logging")) {
+    const json& l = root["logging"];
+    if (Status s = expect_keys(l, "logging", {"level", "file"}); !s.ok()) return s;
+    if (Status s = get_opt(l, "level", "logging", c.logging.level); !s.ok()) return s;
+    if (Status s = get_opt(l, "file", "logging", c.logging.file); !s.ok()) return s;
+    if (c.logging.level != "info" && c.logging.level != "warn" && c.logging.level != "error") {
+      return Status::invalid_argument("logging.level must be info, warn or error");
+    }
   }
 
   if (root.contains("trusted_proxies")) {

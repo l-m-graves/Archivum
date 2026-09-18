@@ -13,10 +13,12 @@ std::string directory_of(const std::string& path) {
   return path.substr(0, slash);
 }
 
+// One random_device per call: a function-local generator was global state
+// shared by every instance, and ThreadSanitizer found two instances on two
+// threads racing on it in their checkpoints (invariant I1: no global state).
 std::uint32_t random_salt() {
-  static std::random_device rd;
-  static std::mt19937_64 rng(rd());
-  return static_cast<std::uint32_t>(rng());
+  std::random_device rd;
+  return static_cast<std::uint32_t>(rd());
 }
 
 }  // namespace

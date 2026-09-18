@@ -56,7 +56,7 @@ ARCHIVUM_TEST(backup_under_concurrent_writes_restores_and_verifies) {
   auto st = Store::open(vfs, "b/live.db", opts());
   REQUIRE_OK(st.status());
   Store& store = *st.value();
-  REQUIRE_OK(migrate(store, punchline::migrations()).status());
+  REQUIRE_OK(core::migrate_all(store, {&punchline::module()}).status());
   const std::uint64_t base = store.db().begin_read().value()->change_counter();
   std::atomic<bool> stop{false};
   std::atomic<int> failures{0};
@@ -100,7 +100,7 @@ ARCHIVUM_TEST(restored_backup_beside_a_live_log_is_refused) {
   MemVfs vfs;
   auto st = Store::open(vfs, "c/live.db", opts());
   REQUIRE_OK(st.status());
-  REQUIRE_OK(migrate(*st.value(), punchline::migrations()).status());
+  REQUIRE_OK(core::migrate_all(*st.value(), {&punchline::module()}).status());
   auto cc = st.value()->backup(vfs, "c/backup.db");
   REQUIRE_OK(cc.status());
   for (int i = 1; i <= 20; ++i) {
@@ -127,7 +127,7 @@ ARCHIVUM_TEST(point_in_time_recovery_by_counter_and_by_time) {
   auto st = Store::open(vfs, "d/live.db", opts("d/archive"));
   REQUIRE_OK(st.status());
   Store& store = *st.value();
-  REQUIRE_OK(migrate(store, punchline::migrations()).status());
+  REQUIRE_OK(core::migrate_all(store, {&punchline::module()}).status());
   auto base_cc = store.backup(vfs, "d/base.db");
   REQUIRE_OK(base_cc.status());
   // Expected dump and commit time at every change counter after the backup.

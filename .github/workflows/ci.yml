@@ -23,9 +23,18 @@ jobs:
           # Sanitized Debug runs fewer randomized iterations; Release runs
           # the large counts the model-based tests are sized for.
           - preset: linux-debug
+            triplet: x64-linux-cxx20
             crash_iters: "1000"
           - preset: linux-release
+            triplet: x64-linux-cxx20
             crash_iters: "10000"
+          # ThreadSanitizer: a separate build (it cannot share one with
+          # ASan) with every vcpkg port instrumented too, running every
+          # test labelled "concurrency". Added after the Stage 4 pager
+          # race: ASan and UBSan do not see data races.
+          - preset: linux-tsan
+            triplet: x64-linux-cxx20-tsan
+            crash_iters: "200"
     env:
       CC: gcc-12
       CXX: g++-12
@@ -54,7 +63,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: /opt/vcpkg-cache
-          key: vcpkg-${{ runner.os }}-x64-linux-cxx20-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/*', 'cmake/vcpkg-overlay-ports/**') }}
+          key: vcpkg-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/triplets/*', 'cmake/vcpkg-overlay-ports/**') }}
       - name: JSON boundary rule (docs/json-boundary.md)
         run: |
           # jsoncpp may be named only in the bridge.
@@ -77,6 +86,8 @@ jobs:
           ARCHIVUM_CRASH_ITERS: ${{ matrix.crash_iters }}
           ASAN_OPTIONS: detect_leaks=0
           UBSAN_OPTIONS: print_stacktrace=1
+          # halt_on_error: a data race fails the test, it is not a warning.
+          TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
         run: ctest --preset ${{ matrix.preset }}
 
   windows:

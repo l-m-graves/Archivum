@@ -7,6 +7,7 @@
   "dependencies": [
     { "name": "drogon", "default-features": false },
     { "name": "jwt-cpp", "default-features": false },
+    "libsodium",
     "nlohmann-json",
     "openssl"
   ]
