@@ -126,7 +126,21 @@ module.
 
 ## 5. Figures
 
-`[FIGURES]`
+CI run 23, seconds:
+
+| Test | Linux Debug (ASan+UBSan) | Linux Release | Linux TSan | Windows Debug | Windows Release |
+|---|---|---|---|---|---|
+| concurrency_test | `[LD]` | 0.10 | 4.48 | `[WD]` | `[WR]` |
+| core_test | `[LD]` | 0.33 | (not labelled) | `[WD]` | `[WR]` |
+| punchline_rules_test | `[LD]` | 0.01 | | `[WD]` | `[WR]` |
+| punchline_migration_test (740 crash points) | `[LD]` | 1.88 | | `[WD]` | `[WR]` |
+| server_integration_test | `[LD]` | 3.61 | 5.01 | `[WD]` | `[WR]` |
+| server_core_test | `[LD]` | 5.50 | 42.78 | `[WD]` | `[WR]` |
+| server_saturation_test | `[LD]` | 3.66 | 5.10 | `[WD]` | `[WR]` |
+| whole suite (23 tests; TSan: the 7 labelled) | `[LD]` | 36.9 | 64.5 | `[WD]` | `[WR]` |
+
+`server_core_test` under TSan spends most of its time in the health test
+waiting out the shipper cadence, as designed.
 
 Two CI-only failures on the way, both in tests, both fixed in the same
 push as the fixture race: `/healthz` is 503 by design until the first
