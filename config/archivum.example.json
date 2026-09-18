@@ -15,5 +15,15 @@
     "jwks_refresh_min_interval_seconds": 60,
     "jwks_default_max_age_seconds": 3600
   },
+  "database": {
+    "path": "C:/ProgramData/Archivum/data/operational.db",
+    "archive_dir": "C:/ProgramData/Archivum/data/archive"
+  },
+  "backup": {
+    "destination": "\\\\backup-host\\archivum",
+    "archive_cadence_seconds": 300,
+    "backup_cadence_seconds": 86400
+  },
+  "logging": { "level": "info", "file": "C:/ProgramData/Archivum/log/archivum.log" },
   "trusted_proxies": []
 }

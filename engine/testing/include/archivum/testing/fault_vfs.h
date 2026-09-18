@@ -21,6 +21,9 @@
 //
 // Every random choice is drawn from one generator seeded by FaultConfig::seed,
 // so a failing test is reproduced by its seed alone.
+// FaultVfs is single-threaded by design: its crash model is a deterministic
+// schedule of operations, and every crash test drives it from one thread.
+// MemVfs, which it is built from, is thread-safe.
 #pragma once
 
 #include <cstddef>

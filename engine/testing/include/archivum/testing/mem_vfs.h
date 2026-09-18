@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -16,7 +17,10 @@ namespace archivum::testing {
 
 class MemVfs final : public Vfs {
  public:
+  // Thread-safe: multi-threaded tests share one MemVfs. Each file's bytes
+  // are guarded by the file's own mutex, the path table by the VFS's.
   struct FileData {
+    std::mutex mu;
     std::vector<std::byte> bytes;
   };
 
@@ -41,6 +45,7 @@ class MemVfs final : public Vfs {
   std::shared_ptr<FileData> create_if_missing(const std::string& path);
 
  private:
+  mutable std::mutex mu_;
   std::map<std::string, std::shared_ptr<FileData>> files_;
 };
 

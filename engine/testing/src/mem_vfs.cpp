@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 
 namespace archivum::testing {
 namespace {
@@ -14,6 +15,7 @@ class MemFile final : public File {
   Status read(std::uint64_t offset, std::span<std::byte> out, std::size_t& bytes_read) override {
     bytes_read = 0;
     if (!data_) return Status::io("mem file closed");
+    std::lock_guard<std::mutex> lock(data_->mu);
     const std::uint64_t size = data_->bytes.size();
     if (offset >= size) return Status();
     const std::size_t avail = static_cast<std::size_t>(size - offset);
@@ -27,6 +29,7 @@ class MemFile final : public File {
   Status write(std::uint64_t offset, std::span<const std::byte> data) override {
     if (!data_) return Status::io("mem file closed");
     if (!writable_) return Status::io("mem file opened read-only");
+    std::lock_guard<std::mutex> lock(data_->mu);
     const std::uint64_t end = offset + data.size();
     if (end > data_->bytes.size()) data_->bytes.resize(static_cast<std::size_t>(end));
     if (!data.empty()) std::memcpy(data_->bytes.data() + offset, data.data(), data.size());
@@ -41,12 +44,14 @@ class MemFile final : public File {
   Status truncate(std::uint64_t size) override {
     if (!data_) return Status::io("mem file closed");
     if (!writable_) return Status::io("mem file opened read-only");
+    std::lock_guard<std::mutex> lock(data_->mu);
     data_->bytes.resize(static_cast<std::size_t>(size));
     return Status();
   }
 
   Result<std::uint64_t> size() override {
     if (!data_) return Status::io("mem file closed");
+    std::lock_guard<std::mutex> lock(data_->mu);
     return static_cast<std::uint64_t>(data_->bytes.size());
   }
 
@@ -67,25 +72,38 @@ Result<std::unique_ptr<File>> MemVfs::open(const std::string& path, OpenFlags fl
   if (flags.truncate && !flags.write) {
     return Status::invalid_argument("truncate requires write: " + path);
   }
-  auto it = files_.find(path);
-  if (it == files_.end()) {
-    if (!flags.create) return Status::not_found("mem open: " + path);
-    it = files_.emplace(path, std::make_shared<FileData>()).first;
-  } else if (flags.create && flags.exclusive) {
-    return Status::already_exists("mem open exclusive: " + path);
+  std::shared_ptr<FileData> data;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = files_.find(path);
+    if (it == files_.end()) {
+      if (!flags.create) return Status::not_found("mem open: " + path);
+      it = files_.emplace(path, std::make_shared<FileData>()).first;
+    } else if (flags.create && flags.exclusive) {
+      return Status::already_exists("mem open exclusive: " + path);
+    }
+    data = it->second;
   }
-  if (flags.truncate) it->second->bytes.clear();
-  return std::unique_ptr<File>(new MemFile(it->second, flags.write));
+  if (flags.truncate) {
+    std::lock_guard<std::mutex> lock(data->mu);
+    data->bytes.clear();
+  }
+  return std::unique_ptr<File>(new MemFile(std::move(data), flags.write));
 }
 
-Result<bool> MemVfs::exists(const std::string& path) { return files_.count(path) != 0; }
+Result<bool> MemVfs::exists(const std::string& path) {
+  std::lock_guard<std::mutex> lock(mu_);
+  return files_.count(path) != 0;
+}
 
 Status MemVfs::remove(const std::string& path) {
+  std::lock_guard<std::mutex> lock(mu_);
   if (files_.erase(path) == 0) return Status::not_found("mem remove: " + path);
   return Status();
 }
 
 Status MemVfs::rename(const std::string& from, const std::string& to) {
+  std::lock_guard<std::mutex> lock(mu_);
   auto it = files_.find(from);
   if (it == files_.end()) return Status::not_found("mem rename: " + from);
   auto data = it->second;
@@ -100,6 +118,7 @@ Result<std::vector<std::string>> MemVfs::list(const std::string& dir) {
   // Directories exist implicitly: a directory is any prefix of a path.
   const std::string prefix = dir + "/";
   std::vector<std::string> names;
+  std::lock_guard<std::mutex> lock(mu_);
   for (const auto& [path, data] : files_) {
     if (path.rfind(prefix, 0) != 0) continue;
     const std::string rest = path.substr(prefix.size());
@@ -108,44 +127,62 @@ Result<std::vector<std::string>> MemVfs::list(const std::string& dir) {
   return names;
 }
 
-bool MemVfs::has(const std::string& path) const { return files_.count(path) != 0; }
+bool MemVfs::has(const std::string& path) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return files_.count(path) != 0;
+}
 
 std::vector<std::byte> MemVfs::contents(const std::string& path) const {
-  auto it = files_.find(path);
-  if (it == files_.end()) return {};
-  return it->second->bytes;
+  std::shared_ptr<FileData> data;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = files_.find(path);
+    if (it == files_.end()) return {};
+    data = it->second;
+  }
+  std::lock_guard<std::mutex> lock(data->mu);
+  return data->bytes;
 }
 
 void MemVfs::put(const std::string& path, std::vector<std::byte> bytes) {
   auto data = std::make_shared<FileData>();
   data->bytes = std::move(bytes);
+  std::lock_guard<std::mutex> lock(mu_);
   files_[path] = std::move(data);
 }
 
 std::vector<std::string> MemVfs::paths() const {
+  std::lock_guard<std::mutex> lock(mu_);
   std::vector<std::string> out;
   out.reserve(files_.size());
   for (const auto& [path, data] : files_) out.push_back(path);
   return out;
 }
 
-void MemVfs::clear() { files_.clear(); }
+void MemVfs::clear() {
+  std::lock_guard<std::mutex> lock(mu_);
+  files_.clear();
+}
 
 void MemVfs::clone_from(const MemVfs& other) {
+  std::scoped_lock lock(mu_, other.mu_);
   files_.clear();
   for (const auto& [path, data] : other.files_) {
     auto copy = std::make_shared<FileData>();
+    std::lock_guard<std::mutex> file_lock(data->mu);
     copy->bytes = data->bytes;
     files_[path] = std::move(copy);
   }
 }
 
 std::shared_ptr<MemVfs::FileData> MemVfs::find(const std::string& path) const {
+  std::lock_guard<std::mutex> lock(mu_);
   auto it = files_.find(path);
   return it == files_.end() ? nullptr : it->second;
 }
 
 std::shared_ptr<MemVfs::FileData> MemVfs::create_if_missing(const std::string& path) {
+  std::lock_guard<std::mutex> lock(mu_);
   auto it = files_.find(path);
   if (it == files_.end()) it = files_.emplace(path, std::make_shared<FileData>()).first;
   return it->second;

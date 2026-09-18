@@ -437,8 +437,13 @@ Status Db::checkpoint_locked() {
   // Archive the log before it is emptied; the segment is named by the
   // base it continues from so recovery can chain segments.
   if (!options_.archive_dir.empty()) {
+    // Written under a temporary name and renamed into place, so that a
+    // concurrent reader of the archive directory (the off-host shipper)
+    // never sees a half-written segment under its final name.
     const std::string seg = options_.archive_dir + "/" + archive_segment_name(impl_->db_id, wal.base_change_counter());
-    if (Status s = wal.copy_committed_to(vfs_, seg); !s.ok()) return s;
+    if (Status s = wal.copy_committed_to(vfs_, seg + ".part"); !s.ok()) return s;
+    if (Status s = vfs_.rename(seg + ".part", seg); !s.ok()) return s;
+    if (Status s = vfs_.sync_directory(options_.archive_dir); !s.ok()) return s;
     ++impl_->archived_segments;
   }
   // Whatever reset() manages to do, cached copies keyed by frame are stale

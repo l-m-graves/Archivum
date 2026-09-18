@@ -4,10 +4,14 @@ Storage engine, application server, and low-code SQL interface for the
 Punchline, Finalysis, and Synthex applications. One C++20 binary, one data
 directory, no external database.
 
-Status: **Stage 4** (integrity check, online backup, restore, log
-archive, point-in-time recovery, migrations, the Punchline schema as the
-first migration). No SQL yet (v1.1). See `docs/plan-v1.md` for the plan
-and `docs/engine-design.md` for the engine.
+Status: **Stage 5** (server core: configuration that fails closed,
+structured logs, identity from three credentials with roles as data, the
+recorder that is the audit writer and the change feed, local accounts and
+break-glass, device enrollment with the per-device credential, the
+off-host archive check, the module framework; a ThreadSanitizer CI job).
+No SQL yet (v1.1). See `docs/plan-v1.md` for the plan,
+`docs/engine-design.md` for the engine and `docs/server-core.md` for the
+server.
 
 ## Build
 
@@ -28,15 +32,18 @@ ctest --preset linux-debug
 
 ```
 server/            application server library and the archivum executable
-  include/archivum/server/  config.h oidc.h app.h
-  src/               config.cpp app.cpp main.cpp auth/oidc.cpp http/json_bridge.cpp
+  include/archivum/server/  config.h oidc.h identity.h log.h archive.h modules.h app.h
+  src/               config.cpp log.cpp archive.cpp app.cpp main.cpp auth/{oidc,identity}.cpp
+                     http/{json_bridge,request}.cpp modules/punchline_routes.cpp
+core/              what every module shares: core schema, recorder (audit + change feed),
+                   credentials (Argon2id), local accounts, roles and dataset grants, module interface
 engine/            storage engine library (archivum_engine)
   include/archivum/  status.h crc32c.h vfs.h journal.h
                      engine/{db,page_format,btree,types,record,store,recovery,migrate}.h
   src/               crc32c.cpp journal.cpp vfs_posix.cpp vfs_win32.cpp
                      engine/{db,wal,page_format,btree,types,record,store,recovery,migrate}.cpp
   testing/           test-only doubles: MemVfs, FaultVfs (the crash shim)
-modules/punchline/   the Punchline module: its schema as migrations (Stage 4); endpoints in Stage 6
+modules/punchline/   the Punchline module: schema, module rules, data helpers; sync endpoints in Stage 6
 tests/
   support/           minimal test framework (no dependency)
   unit/              per-component tests
@@ -45,7 +52,7 @@ tests/
   server/            test PKI, test issuer, integration and saturation tests (Stage 1)
 config/            archivum.example.json
 docs/                design, formats, durability model, testing model
-.github/workflows/   CI: Windows (MSVC 2022) and Linux (Ubuntu 22.04, GCC 12)
+.github/workflows/   CI: Windows (MSVC 2022) and Linux (Ubuntu 22.04, GCC 12: ASan+UBSan, Release, ThreadSanitizer)
 ```
 
 ## Documents
@@ -71,3 +78,6 @@ docs/                design, formats, durability model, testing model
 - `docs/backup-recovery.md`: backup, restore, log archive and point-in-time recovery, for operators.
 - `docs/punchline-schema.md`: the Punchline tables, their constraints and the assumptions behind them.
 - `docs/stage4-report.md`: the Stage 4 gate, test figures and findings.
+- `docs/server-core.md`: configuration, logging, identity, roles, local accounts, the off-host archive check, modules, routes.
+- `docs/audit-and-change-feed.md`: the recorder, the record policy and the presence-and-shape rule.
+- `docs/stage5-report.md`: the Stage 5 gate, ThreadSanitizer findings, schema answers.

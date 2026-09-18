@@ -45,8 +45,11 @@ jobs:
       - name: Install toolchain
         run: |
           apt-get update
+          # autoconf, automake, autoconf-archive and libtool: the libsodium port
+          # (Argon2id for credentials) is an autotools build.
           apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build g++-12 \
-            curl zip unzip tar pkg-config python3 make perl linux-libc-dev
+            curl zip unzip tar pkg-config python3 make perl linux-libc-dev \
+            autoconf autoconf-archive automake libtool
           mkdir -p /opt/vcpkg-cache
           cmake --version
           g++-12 --version

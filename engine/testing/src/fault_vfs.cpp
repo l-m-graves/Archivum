@@ -1,6 +1,7 @@
 #include "archivum/testing/fault_vfs.h"
 
 #include <algorithm>
+#include <mutex>
 #include <cstring>
 
 namespace archivum::testing {
@@ -285,6 +286,7 @@ void FaultVfs::apply_to_durable(const PendingOp& op) {
     case OpKind::Write: {
       auto data = durable_.find(op.path);
       if (!data) break;  // the file's creation never became durable: the write is lost
+      std::lock_guard<std::mutex> lock(data->mu);
       const std::uint64_t end = op.offset + op.data.size();
       if (end > data->bytes.size()) data->bytes.resize(static_cast<std::size_t>(end));
       if (!op.data.empty()) {
@@ -295,6 +297,7 @@ void FaultVfs::apply_to_durable(const PendingOp& op) {
     case OpKind::Truncate: {
       auto data = durable_.find(op.path);
       if (!data) break;
+      std::lock_guard<std::mutex> lock(data->mu);
       data->bytes.resize(static_cast<std::size_t>(op.size));
       break;
     }
