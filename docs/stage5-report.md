@@ -130,14 +130,14 @@ CI run 23, seconds:
 
 | Test | Linux Debug (ASan+UBSan) | Linux Release | Linux TSan | Windows Debug | Windows Release |
 |---|---|---|---|---|---|
-| concurrency_test | `[LD]` | 0.10 | 4.48 | `[WD]` | `[WR]` |
-| core_test | `[LD]` | 0.33 | (not labelled) | `[WD]` | `[WR]` |
-| punchline_rules_test | `[LD]` | 0.01 | | `[WD]` | `[WR]` |
-| punchline_migration_test (740 crash points) | `[LD]` | 1.88 | | `[WD]` | `[WR]` |
-| server_integration_test | `[LD]` | 3.61 | 5.01 | `[WD]` | `[WR]` |
-| server_core_test | `[LD]` | 5.50 | 42.78 | `[WD]` | `[WR]` |
-| server_saturation_test | `[LD]` | 3.66 | 5.10 | `[WD]` | `[WR]` |
-| whole suite (23 tests; TSan: the 7 labelled) | `[LD]` | 36.9 | 64.5 | `[WD]` | `[WR]` |
+| concurrency_test | 2.01 | 0.10 | 4.48 | `[WD]` | `[WR]` |
+| core_test | 6.38 | 0.33 | (not labelled) | `[WD]` | `[WR]` |
+| punchline_rules_test | 0.09 | 0.01 | | `[WD]` | `[WR]` |
+| punchline_migration_test (740 crash points) | 30.36 | 1.88 | | `[WD]` | `[WR]` |
+| server_integration_test | 3.88 | 3.61 | 5.01 | `[WD]` | `[WR]` |
+| server_core_test | 12.79 | 5.50 | 42.78 | `[WD]` | `[WR]` |
+| server_saturation_test | 4.12 | 3.66 | 5.10 | `[WD]` | `[WR]` |
+| whole suite (23 tests; TSan: the 7 labelled) | 119.3 | 36.9 | 64.5 | `[WD]` | `[WR]` |
 
 `server_core_test` under TSan spends most of its time in the health test
 waiting out the shipper cadence, as designed.
