@@ -1,7 +1,7 @@
 # Stage 6 report: the Punchline module
 
 Scope from `docs/plan-v1.md` (Stage 6) and the Stage 6 rulings. CI run
-`[CI-RUN]` on six jobs: Linux Debug (ASan+UBSan), Linux Release, Linux
+[29](https://github.com/l-m-graves/Archivum/actions/runs/35633803162) on six jobs: Linux Debug (ASan+UBSan), Linux Release, Linux
 Debug ThreadSanitizer, Windows Debug, Windows Release, and the contract
 suite against the FastAPI prototype (which passes visibly-skipped until a
 token for the Punchline repository is configured; it ran here against the
@@ -66,19 +66,21 @@ is refused by name here.
 
 ## 4. Figures
 
-CI run `[CI-RUN]`, seconds:
+CI run [29](https://github.com/l-m-graves/Archivum/actions/runs/35633803162), seconds (the crash-point count is
+the local Debug run's; the crash schedule is seeded, so CI walks the same
+852):
 
 | Test | Linux Debug (ASan+UBSan) | Linux Release | Linux TSan | Windows Debug | Windows Release |
 |---|---|---|---|---|---|
-| concurrency_test (5 tests, incl. the salts) | `[LD]` | `[LR]` | `[LT]` | `[WD]` | `[WR]` |
-| punchline_rules_test (8) | `[LD]` | `[LR]` | | `[WD]` | `[WR]` |
-| punchline_sync_test (4) | `[LD]` | `[LR]` | | `[WD]` | `[WR]` |
-| punchline_migration_test (`[CP]` crash points) | `[LD]` | `[LR]` | | `[WD]` | `[WR]` |
-| server_integration_test (12, incl. the concurrent refresh) | `[LD]` | `[LR]` | `[LT]` | `[WD]` | `[WR]` |
-| server_core_test (7; 18-endpoint contract) | `[LD]` | `[LR]` | `[LT]` | `[WD]` | `[WR]` |
-| server_punchline_test (9) | `[LD]` | `[LR]` | `[LT]` | `[WD]` | `[WR]` |
-| server_contract_test (8 scenarios) | `[LD]` | `[LR]` | `[LT]` | `[WD]` | `[WR]` |
-| whole suite (26 tests; TSan: the 9 labelled) | `[LD]` | `[LR]` | `[LT]` | `[WD]` | `[WR]` |
+| concurrency_test (5 tests, incl. the salts) | 2.03 | 0.12 | 4.68 | 1.52 | 0.52 |
+| punchline_rules_test (8) | 0.29 | 0.02 | | 0.14 | 0.03 |
+| punchline_sync_test (4) | 0.52 | 0.04 | | 0.26 | 0.05 |
+| punchline_migration_test (852 crash points) | 40.60 | 2.50 | | 38.75 | 2.48 |
+| server_integration_test (12, incl. the concurrent refresh) | 5.39 | 4.91 | 6.60 | 8.84 | 5.52 |
+| server_core_test (7; 18-endpoint contract) | 15.73 | 8.14 | 57.03 | 20.85 | 8.90 |
+| server_punchline_test (9) | 15.85 | 4.94 | 74.52 | 16.17 | 5.83 |
+| server_contract_test (8 scenarios) | 14.36 | 1.56 | 83.36 | 10.03 | 2.39 |
+| whole suite (26 tests; TSan: the 9 labelled) | 165.9 | 47.8 | 239.5 | 149.6 | 56.3 |
 
 ## 5. The Windows-only threaded surface
 
