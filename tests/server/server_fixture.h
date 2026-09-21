@@ -38,7 +38,9 @@ inline Ports pick_ports() {
 #else
   const unsigned pid = static_cast<unsigned>(::getpid());
 #endif
-  const std::uint16_t base = static_cast<std::uint16_t>(20000 + (pid % 20000));
+  // Four ports per process, spaced so that two test processes with
+  // adjacent pids (ctest -j) never share one.
+  const std::uint16_t base = static_cast<std::uint16_t>(20000 + (pid % 10000) * 4);
   return Ports{base, static_cast<std::uint16_t>(base + 1), static_cast<std::uint16_t>(base + 2),
                static_cast<std::uint16_t>(base + 3)};
 }
