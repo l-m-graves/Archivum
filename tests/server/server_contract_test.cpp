@@ -5,6 +5,10 @@
 // of punchline-updates.md section 10. Each scenario maps the abstract
 // entry to Archivum's wire shape (punches under a device credential) and
 // asserts the outcomes the file names.
+#include <vector>
+#include <string>
+#include <cstdlib>
+#include <cstdio>
 #include <fstream>
 #include <map>
 #include <set>

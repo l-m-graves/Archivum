@@ -1,6 +1,10 @@
 // Sync, pairing, corrections and the approval lifecycle at the module
 // level: engine only, one Recorder per "request", no server. The wire
 // layer (tests/server/server_punchline_test.cpp) is thin over this.
+#include <vector>
+#include <string>
+#include <optional>
+#include <memory>
 #include <set>
 
 #include "archivum/core/module.h"

@@ -11,6 +11,11 @@
 // enrollment record's, never the request's; a request that asserts one
 // is refused with 400 and, from a device, logged and counted as a tamper
 // signal toward an `employee_id_asserted` exception (Stage 6 ruling).
+#include <vector>
+#include <utility>
+#include <map>
+#include <cstdlib>
+#include <algorithm>
 #include <drogon/drogon.h>
 
 #include <set>

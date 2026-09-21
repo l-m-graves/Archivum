@@ -1,3 +1,5 @@
+#include <vector>
+#include <string>
 #include "archivum/punchline/exceptions.h"
 
 #include <algorithm>

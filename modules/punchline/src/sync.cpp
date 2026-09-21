@@ -1,3 +1,6 @@
+#include <vector>
+#include <string>
+#include <cstdint>
 #include "archivum/punchline/sync.h"
 
 #include <algorithm>

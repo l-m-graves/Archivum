@@ -4,6 +4,10 @@
 // supervisor queue, the payroll export (released and locked only), the
 // period audit report, the segregation-of-duties report, the employee_id
 // tamper signal, and the freshness and cutoff monitor.
+#include <vector>
+#include <string>
+#include <map>
+#include <cstdio>
 #include <chrono>
 #include <set>
 #include <thread>

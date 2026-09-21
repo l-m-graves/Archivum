@@ -1,3 +1,4 @@
+#include <string>
 #include "archivum/punchline/lifecycle.h"
 
 #include <map>
