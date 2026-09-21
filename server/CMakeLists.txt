@@ -22,6 +22,7 @@ add_library(archivum_server STATIC
   src/http/request.cpp
   src/auth/oidc.cpp
   src/auth/identity.cpp
+  src/modules/punchline_module.cpp
   src/modules/punchline_routes.cpp
   src/app.cpp
 )

@@ -5,8 +5,11 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "archivum/status.h"
 
@@ -62,6 +65,10 @@ struct Config {
   LoggingConfig logging;
   // Forwarded headers (X-Forwarded-For) are honoured only from these addresses.
   std::vector<std::string> trusted_proxies;
+  // Per-module sections, `modules.<name>`, parsed by the module itself with
+  // its own allow-list (server/src/modules/*). A section for a module that
+  // is not built in is an error.
+  std::map<std::string, nlohmann::json> modules;
 };
 
 // Parses and validates. Fails closed: a missing certificate, an http://

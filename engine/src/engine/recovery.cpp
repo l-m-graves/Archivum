@@ -5,6 +5,7 @@
 #include <map>
 #include <vector>
 
+#include "archivum/crc32c.h"
 #include "archivum/engine/db.h"
 #include "archivum/engine/page_format.h"
 #include "wal.h"
@@ -42,6 +43,52 @@ Status copy_file(Vfs& vfs, const std::string& from, const std::string& to) {
   if (Status s = out.value()->sync(); !s.ok()) return s;
   if (Status s = out.value()->close(); !s.ok()) return s;
   return vfs.sync_directory(dir_of(to));
+}
+
+Result<FileDigest> file_digest(Vfs& vfs, const std::string& path) {
+  auto in = vfs.open(path, OpenFlags{});
+  if (!in.ok()) return in.status();
+  auto size = in.value()->size();
+  if (!size.ok()) return size.status();
+  FileDigest d;
+  d.size = size.value();
+  std::vector<std::byte> buf(1 << 16);
+  std::uint64_t off = 0;
+  while (off < d.size) {
+    std::size_t got = 0;
+    if (Status s = in.value()->read(off, buf, got); !s.ok()) return s;
+    if (got == 0) return Status::io("short read at " + std::to_string(off) + ": " + path);
+    d.crc32c = crc32c(d.crc32c, std::span<const std::byte>(buf.data(), got));
+    off += got;
+  }
+  return d;
+}
+
+Status verify_backup_file(Vfs& vfs, const std::string& path) {
+  auto in = vfs.open(path, OpenFlags{});
+  if (!in.ok()) return in.status();
+  File& file = *in.value();
+  std::vector<std::byte> probe(kMinPageSize);
+  std::size_t got = 0;
+  if (Status s = file.read(0, probe, got); !s.ok()) return s;
+  if (got < DbHeader::kEncodedBytes) return Status::corrupt("backup too short: " + path);
+  auto hdr = DbHeader::decode(probe);
+  if (!hdr.ok()) return hdr.status();
+  const std::uint32_t page_size = hdr.value().page_size;
+  auto size = file.size();
+  if (!size.ok()) return size.status();
+  if (size.value() != hdr.value().page_count * page_size) {
+    return Status::corrupt("backup " + path + " is " + std::to_string(size.value()) + " bytes, header says " +
+                           std::to_string(hdr.value().page_count) + " pages of " + std::to_string(page_size));
+  }
+  std::vector<std::byte> page(page_size);
+  for (std::uint64_t p = 0; p < hdr.value().page_count; ++p) {
+    if (Status s = file.read(p * page_size, page, got); !s.ok()) return s;
+    if (got != page_size || !page_checksum_ok(page)) {
+      return Status::corrupt("backup " + path + ": page " + std::to_string(p) + " checksum mismatch");
+    }
+  }
+  return Status();
 }
 
 Result<RecoveryReport> recover_to_point(Vfs& vfs, const std::string& backup_path, const std::string& archive_dir,

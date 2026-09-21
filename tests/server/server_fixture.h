@@ -92,6 +92,7 @@ class ServerFixture {
     cfg.backup.archive_cadence_seconds = 1;
     cfg.backup.backup_cadence_seconds = 3600;
     cfg.logging.file = dir + "/server.log";
+    if (!punchline_config.is_null()) cfg.modules["punchline"] = punchline_config;
     config = cfg;
 
     app = std::make_unique<archivum::server::App>(cfg);
@@ -189,6 +190,10 @@ class ServerFixture {
 
   static constexpr const char* kAdminOid = "8f1c2b2e-0000-4000-8000-000000000001";
   static constexpr const char* kEmployeeOid = "8f1c2b2e-0000-4000-8000-000000000002";
+  static constexpr const char* kSupervisorOid = "8f1c2b2e-0000-4000-8000-000000000003";
+  static constexpr const char* kPayrollOid = "8f1c2b2e-0000-4000-8000-000000000004";
+  // Set before start(): the `modules.punchline` section (thresholds, cadences).
+  nlohmann::json punchline_config;
   static constexpr const char* kTid = "7a3d5c11-0000-4000-8000-0000000000aa";
 
   archivum::Status seed() {

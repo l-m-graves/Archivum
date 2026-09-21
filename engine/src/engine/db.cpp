@@ -4,8 +4,9 @@
 #include <chrono>
 #include <cstring>
 #include <list>
-#include <random>
 #include <unordered_set>
+
+#include "archivum/entropy.h"
 
 #include "wal.h"
 
@@ -20,9 +21,8 @@ std::string directory_of(const std::string& path) {
 }
 
 std::array<std::byte, 16> random_db_id() {
-  std::random_device rd;
   std::array<std::byte, 16> id{};
-  for (auto& b : id) b = static_cast<std::byte>(rd() & 0xFFu);
+  random_bytes(id);
   return id;
 }
 
@@ -95,6 +95,9 @@ Result<std::unique_ptr<Db>> Db::open(Vfs& vfs, std::string path, DbOptions optio
       (options.page_size & (options.page_size - 1)) != 0) {
     return Status::invalid_argument("page_size must be a power of two in [512, 65536]");
   }
+  // Entropy is initialised here, not in the checkpoint that first needs a
+  // salt: a process that cannot get randomness fails at open.
+  if (Status s = init_entropy(); !s.ok()) return s;
   std::unique_ptr<Db> db(new Db(vfs, std::move(path), options));
   auto exists = vfs.exists(db->path_);
   if (!exists.ok()) return exists.status();

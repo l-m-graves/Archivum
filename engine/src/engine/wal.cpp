@@ -1,7 +1,8 @@
 #include "wal.h"
 
 #include <algorithm>
-#include <random>
+
+#include "archivum/entropy.h"
 
 namespace archivum::engine {
 namespace {
@@ -13,12 +14,15 @@ std::string directory_of(const std::string& path) {
   return path.substr(0, slash);
 }
 
-// One random_device per call: a function-local generator was global state
-// shared by every instance, and ThreadSanitizer found two instances on two
-// threads racing on it in their checkpoints (invariant I1: no global state).
+// libsodium's generator: thread-safe and stateless from our side (invariant
+// I1: a function-local generator raced between two instances under
+// ThreadSanitizer in Stage 5) and, unlike std::random_device, it cannot
+// throw inside a checkpoint: init_entropy() failed at open if it was going
+// to fail at all.
 std::uint32_t random_salt() {
-  std::random_device rd;
-  return static_cast<std::uint32_t>(rd());
+  std::uint32_t v = 0;
+  random_bytes(std::as_writable_bytes(std::span<std::uint32_t, 1>(&v, 1)));
+  return v;
 }
 
 }  // namespace

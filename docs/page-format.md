@@ -1,7 +1,8 @@
 # Page and log formats
 
 Normative for `engine/include/archivum/engine/page_format.h`. All integers
-are little-endian. Format version 1.
+are little-endian. Format version 3 (2 added `commit_time_us`; 3 changed the
+catalog row layout, `docs/store-format.md`; nothing was deployed under 1 or 2).
 
 ## Database file
 
@@ -26,7 +27,7 @@ read fails with `Corrupt`. `Db::usable_page_bytes()` is N-4.
 offset  size  field
 0       8     magic "ARCHVDB1"
 8       4     page_size
-12      4     format_version = 1
+12      4     format_version = 3
 16      8     page_count      pages in the logical database, header included
 24      8     freelist_head   page number of the first free page, 0 = none
 32      8     freelist_count

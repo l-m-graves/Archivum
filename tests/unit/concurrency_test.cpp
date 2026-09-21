@@ -2,10 +2,14 @@
 // exercise. Run under ThreadSanitizer in CI (label "concurrency") as well
 // as under ASan and Release. Each test states the path it covers.
 #include <atomic>
+#include <mutex>
+#include <set>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "archivum/engine/migrate.h"
+#include "archivum/engine/page_format.h"
 #include "archivum/engine/recovery.h"
 #include "archivum/engine/store.h"
 #include "archivum/punchline/schema.h"
@@ -257,4 +261,55 @@ ARCHIVUM_TEST(concurrency_backup_checkpoint_archive_and_writers) {
     REQUIRE_OK(chk.status());
     CHECK_MSG(chk.value().ok, chk.value().problems[0]);
   }
+}
+
+// Stage 6 ruling: salts come from libsodium's generator. Two instances on
+// two threads checkpointing concurrently produce distinct (salt1, salt2)
+// pairs on every reset, read back from each log's header after each
+// checkpoint.
+ARCHIVUM_TEST(concurrency_checkpoints_on_two_threads_produce_distinct_salts) {
+  MemVfs vfs;
+  auto a = Store::open(vfs, "t/sa.db", opts());
+  auto b = Store::open(vfs, "t/sb.db", opts());
+  REQUIRE_OK(a.status());
+  REQUIRE_OK(b.status());
+  std::mutex mu;
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> salts;
+  std::atomic<int> bad{0};
+  auto work = [&](Store& s, const char* path, const char* table) {
+    auto w = s.begin_write();
+    if (!w.ok() || !w.value()->create_table(kv(table)).ok() || !w.value()->commit().ok()) {
+      bad.fetch_add(1);
+      return;
+    }
+    for (int i = 0; i < 60; ++i) {
+      auto wr = s.begin_write();
+      if (!wr.ok() || !wr.value()->insert(table, {Value::integer(i), Value::text("x"), Value::null()}).ok() ||
+          !wr.value()->commit().ok()) {
+        bad.fetch_add(1);
+        return;
+      }
+      if (Status c = s.checkpoint(); !c.ok()) {
+        bad.fetch_add(1);
+        return;
+      }
+      // After a checkpoint the log holds a fresh header with new salts.
+      auto hdr = WalHeader::decode(vfs.contents(std::string(path) + ".wal"));
+      if (!hdr.ok()) {
+        bad.fetch_add(1);
+        return;
+      }
+      std::lock_guard<std::mutex> lock(mu);
+      salts.emplace_back(hdr.value().salt1, hdr.value().salt2);
+    }
+  };
+  std::thread ta([&] { work(*a.value(), "t/sa.db", "ta"); });
+  std::thread tb([&] { work(*b.value(), "t/sb.db", "tb"); });
+  ta.join();
+  tb.join();
+  CHECK(bad.load() == 0);
+  REQUIRE(salts.size() == 120);
+  std::set<std::pair<std::uint32_t, std::uint32_t>> distinct(salts.begin(), salts.end());
+  CHECK_MSG(distinct.size() == salts.size(), "repeated salt pair across " << salts.size() << " checkpoints");
+  for (const auto& [s1, s2] : salts) CHECK(!(s1 == 0 && s2 == 0));
 }

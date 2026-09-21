@@ -4,14 +4,14 @@ Storage engine, application server, and low-code SQL interface for the
 Punchline, Finalysis, and Synthex applications. One C++20 binary, one data
 directory, no external database.
 
-Status: **Stage 5** (server core: configuration that fails closed,
-structured logs, identity from three credentials with roles as data, the
-recorder that is the audit writer and the change feed, local accounts and
-break-glass, device enrollment with the per-device credential, the
-off-host archive check, the module framework; a ThreadSanitizer CI job).
-No SQL yet (v1.1). See `docs/plan-v1.md` for the plan,
-`docs/engine-design.md` for the engine and `docs/server-core.md` for the
-server.
+Status: **Stage 6** (the Punchline module: sync with idempotent batches,
+punch pairing, the approval lifecycle with every transition audited,
+corrections, the exception queue with freshness monitoring and escalation
+after cutoff, employee self-service, the supervisor queue, the payroll
+export and period audit report, the contract suite shared with the
+FastAPI prototype). No SQL yet (v1.1). See `docs/plan-v1.md` for the
+plan, `docs/engine-design.md` for the engine, `docs/server-core.md` for
+the server and `docs/punchline-module.md` for the module.
 
 ## Build
 
@@ -34,22 +34,23 @@ ctest --preset linux-debug
 server/            application server library and the archivum executable
   include/archivum/server/  config.h oidc.h identity.h log.h archive.h modules.h app.h
   src/               config.cpp log.cpp archive.cpp app.cpp main.cpp auth/{oidc,identity}.cpp
-                     http/{json_bridge,request}.cpp modules/punchline_routes.cpp
+                     http/{json_bridge,request}.cpp modules/punchline_{module,routes}.cpp
 core/              what every module shares: core schema, recorder (audit + change feed),
                    credentials (Argon2id), local accounts, roles and dataset grants, module interface
 engine/            storage engine library (archivum_engine)
-  include/archivum/  status.h crc32c.h vfs.h journal.h
+  include/archivum/  status.h crc32c.h vfs.h journal.h entropy.h
                      engine/{db,page_format,btree,types,record,store,recovery,migrate}.h
-  src/               crc32c.cpp journal.cpp vfs_posix.cpp vfs_win32.cpp
+  src/               crc32c.cpp journal.cpp entropy.cpp vfs_posix.cpp vfs_win32.cpp
                      engine/{db,wal,page_format,btree,types,record,store,recovery,migrate}.cpp
   testing/           test-only doubles: MemVfs, FaultVfs (the crash shim)
-modules/punchline/   the Punchline module: schema, module rules, data helpers; sync endpoints in Stage 6
+modules/punchline/   the Punchline module: schema, rules, data, local time, sync and pairing, lifecycle, exceptions
 tests/
   support/           minimal test framework (no dependency)
   unit/              per-component tests
   crash/             crash-injection tests (the Stage 0 gate)
   cli/               the binary's operational subcommands on real files
-  server/            test PKI, test issuer, integration and saturation tests (Stage 1)
+  server/            test PKI, test issuer, integration, saturation, core, Punchline and contract tests
+  contract/          the batch-ingest contract shared with the FastAPI prototype (scenarios + pytest runner)
 config/            archivum.example.json
 docs/                design, formats, durability model, testing model
 .github/workflows/   CI: Windows (MSVC 2022) and Linux (Ubuntu 22.04, GCC 12: ASan+UBSan, Release, ThreadSanitizer)
@@ -81,3 +82,5 @@ docs/                design, formats, durability model, testing model
 - `docs/server-core.md`: configuration, logging, identity, roles, local accounts, the off-host archive check, modules, routes.
 - `docs/audit-and-change-feed.md`: the recorder, the record policy and the presence-and-shape rule.
 - `docs/stage5-report.md`: the Stage 5 gate, ThreadSanitizer findings, schema answers.
+- `docs/punchline-module.md`: sync, pairing, the lifecycle, the exception queue, the monitor, the contract suite.
+- `docs/stage6-report.md`: the Stage 6 gate, rulings applied, the Windows-only threaded surface, the v1 release boundary.

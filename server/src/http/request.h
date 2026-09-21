@@ -19,6 +19,12 @@ namespace archivum::server {
 // the offending key, never silently ignored.
 Result<nlohmann::json> parse_body(const drogon::HttpRequestPtr& req, const std::set<std::string>& allowed_keys);
 
+// True when `s` is parse_body's refusal of `employee_id`; `rejected_key_path`
+// gives the path it was found at ("meta.employee_id"). The Punchline routes
+// use both to log the tamper signal (Stage 6 ruling).
+bool is_employee_id_rejection(const Status& s);
+std::string rejected_key_path(const Status& s);
+
 // A JSON error response: {"error": code, "message": message, "request_id": id}.
 drogon::HttpResponsePtr error_response(int http_status, const std::string& code, const std::string& message,
                                        const std::string& request_id);

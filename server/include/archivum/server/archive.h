@@ -4,6 +4,13 @@
 // cadence, into `backup.destination`. The health endpoint reports the last
 // successful copy and fails loudly (503) until one has happened and
 // whenever the last one is older than twice the cadence.
+//
+// Every copy is verified before it counts (Stage 6 ruling): a segment's
+// copy is read back and its size and CRC32C compared with the source; a
+// backup is checked page by page. A mismatch removes the temporary file,
+// fails the pass, and is an alert. Each file is written under a `.part`
+// name, synced, renamed into place, and the destination directory synced
+// (a no-op on NTFS, which journals metadata; fsync on POSIX).
 #pragma once
 
 #include <atomic>
@@ -28,6 +35,7 @@ struct ShipStatus {
   std::uint64_t segments_shipped = 0;
   std::uint64_t backups_shipped = 0;
   std::uint64_t failures = 0;
+  std::uint64_t verification_failures = 0;  // copies that did not match their source
 };
 
 class ArchiveShipper {
@@ -46,6 +54,7 @@ class ArchiveShipper {
 
  private:
   void run();
+  Status verify_copy(const std::string& src, const std::string& copy);
   Vfs& vfs_;
   engine::Store& store_;
   DatabaseConfig database_;
@@ -55,6 +64,7 @@ class ArchiveShipper {
   ShipStatus status_;
   std::thread thread_;
   bool stop_ = false;
+  std::atomic<std::uint64_t> verification_failures_{0};
 };
 
 }  // namespace archivum::server

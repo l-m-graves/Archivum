@@ -146,3 +146,26 @@ jobs:
         env:
           ARCHIVUM_CRASH_ITERS: ${{ matrix.crash_iters }}
         run: ctest --preset windows-${{ matrix.config }}
+
+  # The batch-ingest contract against the FastAPI prototype
+  # (tests/contract/scenarios.json, the same file the Archivum runner
+  # server_contract_test uses). The prototype lives in the private Punchline
+  # repository; without a token for it the job says so and passes, so the
+  # matrix is never red for a missing secret. Set PUNCHLINE_REPO_TOKEN (a
+  # read-only token for l-m-graves/Punchline) to run it.
+  contract-fastapi:
+    name: contract suite against the FastAPI prototype
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out the Punchline repository, if a token is configured
+        env:
+          TOKEN: ${{ secrets.PUNCHLINE_REPO_TOKEN }}
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "PUNCHLINE_REPO_TOKEN is not set: skipping the FastAPI run (the Archivum runner is in the Linux jobs)"
+            exit 0
+          fi
+          git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/l-m-graves/Punchline.git" /tmp/punchline
+          python3 -m pip install --quiet -r /tmp/punchline/backend/requirements-dev.txt
+          PUNCHLINE_REPO=/tmp/punchline python3 -m pytest tests/contract -q

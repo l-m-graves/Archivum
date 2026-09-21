@@ -25,7 +25,7 @@ struct DbHeader {
   static constexpr std::array<std::byte, 8> kMagic = {
       std::byte{'A'}, std::byte{'R'}, std::byte{'C'}, std::byte{'H'},
       std::byte{'V'}, std::byte{'D'}, std::byte{'B'}, std::byte{'1'}};
-  static constexpr std::uint32_t kFormatVersion = 2;
+  static constexpr std::uint32_t kFormatVersion = 3;  // 3: catalog checks carry other_column (Stage 6)
   static constexpr std::size_t kEncodedBytes = 72;
 
   std::uint32_t page_size = kDefaultPageSize;

@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <ctime>
+#include <set>
 
 #include <drogon/drogon.h>
 #include <openssl/bio.h>
@@ -57,7 +58,20 @@ std::vector<std::pair<std::string, std::string>> tls_conf_commands(const TlsConf
 
 App::App(Config config, std::vector<ServerModule> modules) : config_(std::move(config)), modules_(std::move(modules)) {}
 
+void App::start_modules() {
+  for (const ServerModule& m : modules_) {
+    if (m.start) m.start(*this);
+  }
+}
+
+void App::stop_modules() {
+  for (const ServerModule& m : modules_) {
+    if (m.stop) m.stop();
+  }
+}
+
 App::~App() {
+  stop_modules();
   if (shipper_) shipper_->stop();
   if (store_) (void)store_->close();
 }
@@ -80,6 +94,24 @@ Status App::configure() {
   auto st = engine::Store::open(*vfs_, config_.database.path, dbo);
   if (!st.ok()) return st.status();
   store_ = std::move(st.value());
+  // Module configuration first: a bad section fails startup before
+  // anything is opened or migrated.
+  {
+    std::set<std::string> known;
+    for (const ServerModule& m : modules_) {
+      known.insert(m.data->name());
+      auto it = config_.modules.find(m.data->name());
+      const nlohmann::json section = it == config_.modules.end() ? nlohmann::json::object() : it->second;
+      if (m.configure) {
+        if (Status s = m.configure(section); !s.ok()) return s;
+      } else if (!section.empty()) {
+        return Status::invalid_argument("modules." + m.data->name() + " takes no configuration");
+      }
+    }
+    for (const auto& [name, section] : config_.modules) {
+      if (known.count(name) == 0) return Status::invalid_argument("modules." + name + ": no such module in this binary");
+    }
+  }
   std::vector<const core::Module*> data_modules;
   for (const ServerModule& m : modules_) data_modules.push_back(m.data);
   auto schema = core::migrate_all(*store_, data_modules);
@@ -139,6 +171,7 @@ Status App::configure() {
         body["archive"]["segments_shipped"] = ship.segments_shipped;
         body["archive"]["backups_shipped"] = ship.backups_shipped;
         body["archive"]["failures"] = ship.failures;
+        body["archive"]["verification_failures"] = ship.verification_failures;
         body["archive"]["ok"] = archive_reason.empty();
         if (!archive_reason.empty()) body["archive"]["problem"] = archive_reason;
         body["status"] = archive_reason.empty() ? "ok" : "failing";
@@ -254,11 +287,13 @@ Status App::run(std::function<void()> ready) {
         co_return;
       }
       self->shipper().start();
+      self->start_modules();
       log(LogLevel::Info, "server.ready", {{"address", self->config().listen_address}, {"port", self->config().listen_port}});
       if (ready_cb) ready_cb();
     }(this, ready);
   });
   app.run();
+  stop_modules();
   if (shipper_) shipper_->stop();
   return init_status_;
 }

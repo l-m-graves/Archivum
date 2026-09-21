@@ -49,7 +49,8 @@ truncation, trailing bytes and unknown kinds as `Corrupt`.
   first opened. Key `0x00` holds the schema version as a one-column row.
   Key `0x01 || table name` holds the table definition as a row (name,
   root page, columns, primary key, indexes with their root pages and
-  uniqueness, foreign keys, checks). A table's catalog row is rewritten
+  uniqueness, foreign keys, checks: name, column, other column or empty,
+  op, operand count, operands). A table's catalog row is rewritten
   whole on every change to it.
 - **Table:** one b-tree; key = key encoding of the primary key columns,
   value = row encoding of the whole row, primary key columns included.
@@ -75,7 +76,7 @@ violation leaves the transaction exactly as it was:
 | primary key | absent before insert; update never changes it (delete and insert instead) |
 | unique index | no other row with the same non-NULL indexed values |
 | foreign key | RESTRICT both ways: a child row's non-NULL key must find a parent at insert and at update when it changes; a parent row cannot be deleted, or have its referenced values changed, while a child points at it. Referenced columns are the parent's primary key or a unique index. The child table needs its primary key or an index whose leading columns are the foreign key columns, so the parent-side check is a prefix lookup, never a scan |
-| check | `column op constant` with op in =, ≠, <, ≤, >, ≥, or `column IN (constants)`; a NULL passes |
+| check | `column op constant` with op in =, ≠, <, ≤, >, ≥, `column IN (constants)`, or `column op other_column` on the same row (Stage 6; the two columns must share a type and scale); a NULL on either side passes |
 
 Violations return `ErrorCode::Constraint` and the message names the
 constraint. Schema errors (unknown column, unsupported definition) are

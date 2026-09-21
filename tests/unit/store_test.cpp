@@ -38,7 +38,7 @@ TableDef employees() {
                {"employees_manager", {"manager_id"}, false, 0},
                {"employees_name_id", {"name", "id"}, false, 0}};
   t.foreign_keys = {{"fk_manager", {"manager_id"}, "employees", {"id"}}};
-  t.checks = {{"rate_positive", "rate", CheckOp::Gt, {Value::decimal(0)}}};
+  t.checks = {{"rate_positive", "rate", CheckOp::Gt, {Value::decimal(0)}, ""}};
   return t;
 }
 
@@ -51,7 +51,7 @@ TableDef punches() {
   t.primary_key = {"employee_id", "at"};
   t.indexes = {{"punches_kind", {"kind"}, false, 0}};
   t.foreign_keys = {{"fk_employee", {"employee_id"}, "employees", {"id"}}};
-  t.checks = {{"kind_known", "kind", CheckOp::In, {Value::text("in"), Value::text("out")}}};
+  t.checks = {{"kind_known", "kind", CheckOp::In, {Value::text("in"), Value::text("out")}, ""}};
   return t;
 }
 
@@ -370,6 +370,92 @@ ARCHIVUM_TEST(store_snapshot_readers_and_pending_checkpoint) {
   REQUIRE_OK(now.status());
   CHECK(now.value()->count("employees").value() == 200);
   auto rep = store.check();
+  REQUIRE_OK(rep.status());
+  CHECK_MSG(rep.value().ok, rep.value().problems[0]);
+}
+
+// Stage 6: a same-row comparison between two columns is an engine check
+// (docs/store-format.md). NULL on either side passes; the columns must
+// share a type; the catalog round-trips it.
+ARCHIVUM_TEST(store_column_to_column_checks) {
+  MemVfs vfs;
+  auto st = Store::open(vfs, "s/cc.db", opts());
+  REQUIRE_OK(st.status());
+  Store& store = *st.value();
+  TableDef t;
+  t.name = "ranges";
+  t.columns = {{"id", ColumnType::Integer, false, 0},
+               {"lo", ColumnType::Integer, false, 0},
+               {"hi", ColumnType::Integer, true, 0},
+               {"label", ColumnType::Text, true, 0}};
+  t.primary_key = {"id"};
+  CheckDef ordered;
+  ordered.name = "ranges_ordered";
+  ordered.column = "hi";
+  ordered.op = CheckOp::Gt;
+  ordered.other_column = "lo";
+  t.checks = {ordered};
+  {
+    auto w = store.begin_write();
+    REQUIRE_OK(w.status());
+    REQUIRE_OK(w.value()->create_table(t));
+    REQUIRE_OK(w.value()->insert("ranges", {Value::integer(1), Value::integer(1), Value::integer(2), Value::null()}));
+    REQUIRE_OK(w.value()->insert("ranges", {Value::integer(2), Value::integer(1), Value::null(), Value::null()}));  // NULL passes
+    Status bad = w.value()->insert("ranges", {Value::integer(3), Value::integer(5), Value::integer(5), Value::null()});
+    CHECK(bad.code() == ErrorCode::Constraint);
+    CHECK(bad.message().find("ranges_ordered") != std::string::npos);
+    CHECK(w.value()->insert("ranges", {Value::integer(4), Value::integer(5), Value::integer(4), Value::null()}).code() ==
+          ErrorCode::Constraint);
+    // An update that breaks it is refused too.
+    CHECK(w.value()->update("ranges", {Value::integer(1), Value::integer(9), Value::integer(2), Value::null()}).code() ==
+          ErrorCode::Constraint);
+    REQUIRE_OK(w.value()->commit());
+  }
+  // Definition errors: a different type, the same column, a constant beside a column, IN.
+  {
+    auto w = store.begin_write();
+    REQUIRE_OK(w.status());
+    TableDef bad = t;
+    bad.name = "bad1";
+    bad.checks[0].other_column = "label";
+    CHECK(w.value()->create_table(bad).code() == ErrorCode::InvalidArgument);
+    bad.name = "bad2";
+    bad.checks[0].other_column = "hi";
+    CHECK(w.value()->create_table(bad).code() == ErrorCode::InvalidArgument);
+    bad.name = "bad3";
+    bad.checks[0].other_column = "lo";
+    bad.checks[0].operands = {Value::integer(1)};
+    CHECK(w.value()->create_table(bad).code() == ErrorCode::InvalidArgument);
+    bad.name = "bad4";
+    bad.checks[0].operands.clear();
+    bad.checks[0].op = CheckOp::In;
+    CHECK(w.value()->create_table(bad).code() == ErrorCode::InvalidArgument);
+    bad.name = "bad5";
+    bad.checks[0].op = CheckOp::Gt;
+    bad.checks[0].other_column = "nope";
+    CHECK(w.value()->create_table(bad).code() == ErrorCode::InvalidArgument);
+    w.value()->rollback();
+  }
+  // The catalog persists it: reopen and the check still holds.
+  REQUIRE_OK(store.close());
+  auto again = Store::open(vfs, "s/cc.db", opts());
+  REQUIRE_OK(again.status());
+  {
+    auto rd = again.value()->begin_read();
+    REQUIRE_OK(rd.status());
+    const TableDef* def = rd.value()->catalog().table("ranges");
+    REQUIRE(def != nullptr);
+    REQUIRE(def->checks.size() == 1);
+    CHECK(def->checks[0].other_column == "lo");
+    CHECK(def->checks[0].operands.empty());
+  }
+  auto w = again.value()->begin_write();
+  REQUIRE_OK(w.status());
+  CHECK(w.value()->insert("ranges", {Value::integer(5), Value::integer(2), Value::integer(1), Value::null()}).code() ==
+        ErrorCode::Constraint);
+  REQUIRE_OK(w.value()->insert("ranges", {Value::integer(5), Value::integer(1), Value::integer(3), Value::null()}));
+  REQUIRE_OK(w.value()->commit());
+  auto rep = again.value()->check();
   REQUIRE_OK(rep.status());
   CHECK_MSG(rep.value().ok, rep.value().problems[0]);
 }

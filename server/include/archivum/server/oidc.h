@@ -50,6 +50,7 @@ class OidcValidator : public std::enable_shared_from_this<OidcValidator> {
     std::chrono::system_clock::time_point expires_at;
     std::uint64_t refreshes = 0;
     std::uint64_t refreshes_suppressed = 0;  // unknown kid inside the rate floor
+    std::uint64_t refreshes_joined = 0;      // requests that waited for a refresh in flight
   };
   Snapshot snapshot() const;
 
@@ -63,6 +64,10 @@ class OidcValidator : public std::enable_shared_from_this<OidcValidator> {
   };
   drogon::Task<Result<Fetched>> https_get(std::string url);
   drogon::Task<Status> refresh_jwks();
+  // Single-flight: starts a refresh if none is in flight, else waits for
+  // the one in flight. `floor`: refuse (InvalidArgument) instead of
+  // fetching when the last refresh started inside the rate floor.
+  drogon::Task<Status> refresh_single_flight(bool floor);
   Result<Principal> verify_with_cached_keys(const std::string& token, bool& unknown_kid) const;
 
   OidcConfig config_;
@@ -74,6 +79,9 @@ class OidcValidator : public std::enable_shared_from_this<OidcValidator> {
   std::chrono::steady_clock::time_point last_refresh_started_;
   std::uint64_t refreshes_ = 0;
   std::uint64_t refreshes_suppressed_ = 0;
+  std::uint64_t refreshes_joined_ = 0;
+  bool refresh_in_flight_ = false;
+  std::uint64_t refresh_generation_ = 0;  // bumped when a refresh finishes
 };
 
 }  // namespace archivum::server

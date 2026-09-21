@@ -46,6 +46,17 @@ Result<nlohmann::json> parse_body(const drogon::HttpRequestPtr& req, const std::
   return body;
 }
 
+bool is_employee_id_rejection(const Status& s) {
+  return s.code() == ErrorCode::InvalidArgument && s.message().rfind("employee_id is not accepted", 0) == 0;
+}
+
+std::string rejected_key_path(const Status& s) {
+  const auto at = s.message().find("(at ");
+  if (at == std::string::npos) return "employee_id";
+  const auto end = s.message().find(')', at);
+  return s.message().substr(at + 4, end == std::string::npos ? std::string::npos : end - at - 4);
+}
+
 drogon::HttpResponsePtr error_response(int http_status, const std::string& code, const std::string& message,
                                        const std::string& request_id) {
   nlohmann::json j;

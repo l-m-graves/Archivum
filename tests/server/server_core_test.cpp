@@ -291,12 +291,30 @@ ARCHIVUM_TEST(contract_employee_id_in_any_body_is_rejected_on_every_endpoint) {
       {"/api/v1/admin/roles", admin_bearer()},
       {"/api/v1/admin/roles/1/revoke", admin_bearer()},
       {"/api/v1/device/heartbeat", "Device 00000000-0000-4000-8000-000000000000:x"},
+      // Stage 6
+      {"/api/v1/device/sync", "Device 00000000-0000-4000-8000-000000000000:x"},
+      {"/api/v1/admin/periods", admin_bearer()},
+      {"/api/v1/admin/schedules", admin_bearer()},
+      {"/api/v1/periods/1/submit", admin_bearer()},
+      {"/api/v1/periods/1/approve", admin_bearer()},
+      {"/api/v1/periods/1/release", admin_bearer()},
+      {"/api/v1/periods/1/lock", admin_bearer()},
+      {"/api/v1/entries/manual", admin_bearer()},
+      {"/api/v1/exceptions/1/resolve", admin_bearer()},
+      {"/api/v1/exceptions/1/dismiss", admin_bearer()},
+      {"/api/v1/me/flag", employee_bearer()},
   };
   const std::vector<std::string> bodies = {
       nlohmann::json{{"employee_id", 1}}.dump(),
       nlohmann::json{{"name", "x"}, {"employee_id", "E0001"}}.dump(),
       nlohmann::json{{"meta", {{"employee_id", 1}}}}.dump(),
       nlohmann::json{{"items", nlohmann::json::array({nlohmann::json{{"employee_id", 1}}})}}.dump(),
+      // The sync shape with the key inside an entry.
+      nlohmann::json{{"batch_uuid", "00000000-0000-4000-8000-000000000001"},
+                     {"journal_id", "00000000-0000-4000-8000-000000000002"},
+                     {"entries", nlohmann::json::array({nlohmann::json{{"entry_uuid", "00000000-0000-4000-8000-000000000003"},
+                                                                       {"journal_sequence", 1}, {"kind", "in"}, {"employee_id", "E1"}}})}}
+          .dump(),
   };
   const auto audits_before = audit_count("employee.create") + audit_count("device.enroll");
   for (const Endpoint& e : endpoints) {
@@ -308,6 +326,11 @@ ARCHIVUM_TEST(contract_employee_id_in_any_body_is_rejected_on_every_endpoint) {
     }
   }
   CHECK(audit_count("employee.create") + audit_count("device.enroll") == audits_before);
+  CHECK(audit_count("sync.batch") == 0 && audit_count("period.create") == 0 && audit_count("entry.manual") == 0);
+  // Every rejection was logged with the route and the key; none silently.
+  CHECK(f.log_text().find("\"event\":\"request.employee_id_asserted\"") != std::string::npos);
+  CHECK(f.log_text().find("\"key\":\"meta.employee_id\"") != std::string::npos);
+  CHECK(f.log_text().find("\"key\":\"entries.employee_id\"") != std::string::npos);
   // Unknown keys are refused too, never ignored.
   auto r = f.post("/api/v1/admin/employees", nlohmann::json{{"employee_number", "X"}, {"display_name", "x"}, {"site_zone", "UTC"}, {"role", "admin"}}.dump(),
                   admin_bearer());

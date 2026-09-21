@@ -34,9 +34,12 @@ log; it opens on its own, `archivum check` passes on it, and it is the
 base for point-in-time recovery. The command prints the change counter
 the backup is at.
 
-Take the backup on the host, then copy it off host. The engine does not
-do the off-host copy; the deployment does, and the `[FILL: backup
-destination]` from instructions v2 Q8 names where.
+Take the backup on the host, then copy it off host. The server's archive
+shipper does that copy (`docs/server-core.md`, "Off-host archive check")
+and verifies every file it copied before counting it: a segment by size
+and CRC32C against its source (`engine::file_digest`), a backup page by
+page (`engine::verify_backup_file`). `[FILL: backup destination]` from
+instructions v2 Q8 names where.
 
 ## Log archive
 

@@ -16,6 +16,7 @@ an error. Required, and the server does not start without them:
 | `database` | `path`, `archive_dir` | either missing |
 | `backup` | `destination`, `archive_cadence_seconds`, `backup_cadence_seconds` (default 86400) | destination or cadence missing or zero; destination equal to the archive directory |
 | `logging` | `level` (info, warn, error), `file` (empty: stderr) | unknown level |
+| `modules.<name>` | the module's own section, parsed by the module with its own allow-list (`docs/punchline-module.md`, "Configuration") | unknown key or module, non-positive value |
 
 `backup.destination` is a directory: a mounted share, a UNC path, or a
 directory another agent replicates. `[FILL: backup destination]` and
@@ -28,7 +29,11 @@ fields (`server/include/archivum/server/log.h`). Levels info, warn,
 error and alert; alert is never filtered and marks events a person must
 see: `auth.unknown_principal`, `auth.device_revoked`,
 `auth.device_bad_credential`, `auth.account_used` (every break-glass or
-device-administration use), `auth.account_failed`, `archive.ship_failed`.
+device-administration use), `auth.account_failed`, `archive.ship_failed`,
+`archive.copy_verification_failed`, `archive.backup_verification_failed`,
+`device.tamper_signal`, `device.stale`, `period.past_cutoff`. Warnings
+worth a search: `request.employee_id_asserted` (route, key path, caller
+or device, count), `auth.rejected`.
 No log line carries a request body or a value from one; identifiers,
 outcomes and the request id only (`docs/confidentiality-check.md`).
 Every response carries `X-Request-Id` and the same id appears in its log
@@ -38,7 +43,10 @@ lines and audit rows.
 
 Three credentials, one `Authenticator` (`server/include/archivum/server/identity.h`):
 
-- **Bearer**: an Entra token validated as in Stage 1. The principal's
+- **Bearer**: an Entra token validated as in Stage 1 (JWKS refreshes are
+  single-flight since Stage 6: N requests that hit an expired cache or an
+  unknown kid at once share one fetch and are all answered from it,
+  tested with twelve threads under ThreadSanitizer). The principal's
   standing is then read from data: roles from `role_grants` on
   `(tid, oid)`, and an employee row from `employees.(tid, oid)`. A valid
   token with neither is an unknown principal: 403, an audit row, an
@@ -84,6 +92,15 @@ only).
 own thread every `archive_cadence_seconds`: it copies every archived log
 segment the destination lacks (to a `.part` name, then renamed), and a
 full backup when the last one is older than `backup_cadence_seconds`.
+Every copy is verified before it counts (Stage 6 ruling): a segment's
+copy is read back from the destination and its size and CRC32C compared
+with the source; a backup is checked page by page against its own
+checksums. A mismatch removes the temporary file, fails the pass, is an
+alert, and is counted in `/healthz` as `archive.verification_failures`.
+Durability of the name: the file is synced, renamed into place, and the
+destination directory synced (`fsync` on POSIX; a no-op on NTFS, which
+journals metadata, with the rename done `MOVEFILE_WRITE_THROUGH`); the
+checkpoint's own archive write does the same on the local side.
 `/healthz` returns 503 with `archive.problem` until the first successful
 pass and whenever the last success is older than twice the cadence; a
 failing pass is an alert. Tested end to end in
@@ -99,7 +116,7 @@ Startup applies the core migrations, then each module's, keyed by module
 in `archivum_migrations`; then builds the one record policy; then
 registers routes. Punchline is the built-in module.
 
-## Routes (Stage 5)
+## Routes (Stage 5; the Stage 6 routes are in `docs/punchline-module.md`)
 
 | Route | Credential | Role | What |
 |---|---|---|---|
@@ -115,11 +132,19 @@ registers routes. Punchline is the built-in module.
 
 Every body is parsed by `parse_body`: not an object, an unknown key, or
 `employee_id` at any depth is 400 with a message naming the key. The
-contract test runs every endpoint with four such bodies.
+contract test runs every endpoint (eighteen since Stage 6) with five
+such bodies, and from a device the rejection is a counted tamper signal
+(`docs/punchline-module.md`).
 
-## Not in Stage 5
+## Modules, background work
 
-Punches and sync, pay periods, approvals and exceptions (Stage 6).
+A `ServerModule` has its data layer, a `configure` hook for its section,
+`register_routes`, and `start`/`stop`/`run_once` for background work
+(Punchline's freshness and cutoff monitor). Modules start after
+authentication is initialised and stop before the store closes.
+
+## Not yet
+
 Trusted proxies are configured and validated but no route reads
 `X-Forwarded-For` yet: nothing needs the client address until rate
-limiting, which is Stage 6 with the sync endpoint.
+limiting of the sync endpoint.

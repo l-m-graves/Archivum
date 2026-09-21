@@ -60,26 +60,38 @@ Bytes index_key_of(const TableDef& t, const IndexDef& idx, const Row& row, const
   return k;
 }
 
-bool check_holds(const CheckDef& c, const Value& v) {
-  if (v.is_null()) return true;
-  switch (c.op) {
+bool compare_holds(CheckOp op, const Value& v, const Value& o) {
+  switch (op) {
     case CheckOp::Eq:
-      return Value::compare(v, c.operands[0]) == 0;
+      return Value::compare(v, o) == 0;
     case CheckOp::Ne:
-      return Value::compare(v, c.operands[0]) != 0;
+      return Value::compare(v, o) != 0;
     case CheckOp::Lt:
-      return Value::compare(v, c.operands[0]) < 0;
+      return Value::compare(v, o) < 0;
     case CheckOp::Le:
-      return Value::compare(v, c.operands[0]) <= 0;
+      return Value::compare(v, o) <= 0;
     case CheckOp::Gt:
-      return Value::compare(v, c.operands[0]) > 0;
+      return Value::compare(v, o) > 0;
     case CheckOp::Ge:
-      return Value::compare(v, c.operands[0]) >= 0;
+      return Value::compare(v, o) >= 0;
     case CheckOp::In:
-      return std::any_of(c.operands.begin(), c.operands.end(),
-                         [&](const Value& o) { return Value::compare(v, o) == 0; });
+      return false;
   }
   return false;
+}
+
+bool check_holds(const TableDef& t, const CheckDef& c, const Row& row) {
+  const Value& v = row[static_cast<std::size_t>(t.column_index(c.column))];
+  if (v.is_null()) return true;
+  if (!c.other_column.empty()) {
+    const Value& o = row[static_cast<std::size_t>(t.column_index(c.other_column))];
+    if (o.is_null()) return true;
+    return compare_holds(c.op, v, o);
+  }
+  if (c.op == CheckOp::In) {
+    return std::any_of(c.operands.begin(), c.operands.end(), [&](const Value& o) { return Value::compare(v, o) == 0; });
+  }
+  return compare_holds(c.op, v, c.operands[0]);
 }
 
 // Type, NOT NULL, UTF-8 and CHECK validation of one row; no lookups.
@@ -104,9 +116,7 @@ Status validate_row(const TableDef& t, const Row& row) {
     }
   }
   for (const CheckDef& c : t.checks) {
-    if (!check_holds(c, row[static_cast<std::size_t>(t.column_index(c.column))])) {
-      return Status::constraint("check " + c.name + " on " + t.name);
-    }
+    if (!check_holds(t, c, row)) return Status::constraint("check " + c.name + " on " + t.name);
   }
   return Status();
 }
@@ -181,6 +191,20 @@ Status validate_check(const TableDef& t, const CheckDef& c) {
   if (c.name.empty()) return Status::invalid_argument("check needs a name");
   const int ci = t.column_index(c.column);
   if (ci < 0) return Status::invalid_argument("check " + c.name + ": no column " + c.column);
+  if (!c.other_column.empty()) {
+    // Column to column: same row, same declared type, no constants, no IN.
+    const int oi = t.column_index(c.other_column);
+    if (oi < 0) return Status::invalid_argument("check " + c.name + ": no column " + c.other_column);
+    if (oi == ci) return Status::invalid_argument("check " + c.name + ": compares " + c.column + " with itself");
+    if (c.op == CheckOp::In) return Status::invalid_argument("check " + c.name + ": IN takes constants, not a column");
+    if (!c.operands.empty()) return Status::invalid_argument("check " + c.name + ": a column comparison takes no constant");
+    const ColumnDef& a = t.columns[static_cast<std::size_t>(ci)];
+    const ColumnDef& b = t.columns[static_cast<std::size_t>(oi)];
+    if (a.type != b.type || a.scale != b.scale) {
+      return Status::invalid_argument("check " + c.name + ": " + c.column + " and " + c.other_column + " differ in type");
+    }
+    return Status();
+  }
   if (c.operands.empty()) return Status::invalid_argument("check " + c.name + ": needs an operand");
   if (c.op != CheckOp::In && c.operands.size() != 1) {
     return Status::invalid_argument("check " + c.name + ": needs exactly one operand");
@@ -323,6 +347,7 @@ Row encode_table_def(const TableDef& t) {
   for (const CheckDef& c : t.checks) {
     r.push_back(Value::text(c.name));
     r.push_back(Value::text(c.column));
+    r.push_back(Value::text(c.other_column));  // empty: constant operands follow
     r.push_back(Value::integer(static_cast<std::int64_t>(c.op)));
     r.push_back(Value::integer(static_cast<std::int64_t>(c.operands.size())));
     for (const Value& v : c.operands) r.push_back(v);
@@ -392,11 +417,14 @@ Result<TableDef> decode_table_def(const Row& row) {
     CheckDef chk;
     ARCHIVUM_TAKE(kname, c.text());
     ARCHIVUM_TAKE(kcol, c.text());
+    ARCHIVUM_TAKE(kother, c.text());
     ARCHIVUM_TAKE(op, c.integer());
     ARCHIVUM_TAKE(nops, c.integer());
-    if (op < 1 || op > 7 || nops < 1 || nops > 4096) return Status::corrupt("catalog: bad check");
+    if (op < 1 || op > 7 || nops < 0 || nops > 4096) return Status::corrupt("catalog: bad check");
+    if (kother.empty() ? nops < 1 : nops != 0) return Status::corrupt("catalog: bad check operands");
     chk.name = kname;
     chk.column = kcol;
+    chk.other_column = kother;
     chk.op = static_cast<CheckOp>(op);
     for (std::int64_t k = 0; k < nops; ++k) {
       ARCHIVUM_TAKE(v, c.value());

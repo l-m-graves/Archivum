@@ -96,36 +96,44 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
   // A device bound to an employee; a device for a missing employee is refused.
   REQUIRE_OK(wr.insert("devices", {Value::integer(1), Value::uuid(uuid(1)), Value::text("kiosk-1"), Value::integer(1),
                                    Value::blob(bytes("hash")), now, Value::text("installer"), Value::null(), Value::null(),
-                                   Value::null(), Value::null()}));
+                                   Value::null(), Value::null(), Value::null(), Value::integer(0)}));
   CHECK(wr.insert("devices", {Value::integer(2), Value::uuid(uuid(2)), Value::text("kiosk-2"), Value::integer(99),
                               Value::blob(bytes("hash")), now, Value::text("installer"), Value::null(), Value::null(),
-                              Value::null(), Value::null()}).code() == ErrorCode::Constraint);
+                              Value::null(), Value::null(), Value::null(), Value::integer(0)}).code() == ErrorCode::Constraint);
   REQUIRE_OK(wr.insert("pay_periods", {Value::integer(1), Value::integer(20000), Value::integer(20006), Value::text("America/Los_Angeles"),
                                        Value::text("2024a"), Value::text("open"), Value::null(), Value::null(), Value::null()}));
+  // Same-row comparisons are engine checks (Stage 6): an inverted period, an
+  // inverted schedule, an inverted assignment range.
+  CHECK(wr.insert("pay_periods", {Value::integer(2), Value::integer(20010), Value::integer(20006), Value::text("UTC"),
+                                  Value::text("2024a"), Value::text("open"), Value::null(), Value::null(), Value::null()})
+            .code() == ErrorCode::Constraint);
+  CHECK(wr.insert("schedules", {Value::integer(2), Value::integer(1), Value::integer(1), Value::integer(1020), Value::integer(540),
+                                Value::integer(20000), Value::null()}).code() == ErrorCode::Constraint);
   CHECK(wr.insert("schedules", {Value::integer(1), Value::integer(1), Value::integer(7), Value::integer(540), Value::integer(1020),
                                 Value::integer(20000), Value::null()}).code() == ErrorCode::Constraint);
   REQUIRE_OK(wr.insert("schedules", {Value::integer(1), Value::integer(1), Value::integer(1), Value::integer(540), Value::integer(1020),
                                      Value::integer(20000), Value::null()}));
   // A device-attested offline punch with its journal sequence; the same
   // sequence from the same device is a replay and is refused.
-  Row entry = {Value::integer(1), Value::uuid(uuid(10)), Value::integer(1), Value::integer(1), Value::integer(7),
+  Row entry = {Value::integer(1), Value::uuid(uuid(10)), Value::integer(1), Value::integer(1), Value::uuid(uuid(40)), Value::integer(7),
                Value::text("in"), now, Value::text("2023-11-14T14:13:20"), Value::text("America/Los_Angeles"),
                Value::text("2024a"), Value::timestamp(1'700'000'000'500'000), Value::text("device"), Value::integer(500'000),
-               Value::integer(1), Value::text("recorded"), Value::null(), Value::null(), Value::null(), Value::null(), now};
+               Value::integer(1), Value::text("recorded"), Value::null(), Value::null(), Value::null(), Value::null(), now,
+               Value::null(), Value::null()};
   REQUIRE_OK(wr.insert("time_entries", entry));
   Row replay = entry;
   replay[0] = Value::integer(2);
   replay[1] = Value::uuid(uuid(11));
   CHECK(wr.insert("time_entries", replay).code() == ErrorCode::Constraint);
-  replay[4] = Value::integer(8);
-  replay[5] = Value::text("lunch");
+  replay[5] = Value::integer(8);
+  replay[6] = Value::text("lunch");
   CHECK(wr.insert("time_entries", replay).code() == ErrorCode::Constraint);
-  replay[5] = Value::text("out");
-  replay[14] = Value::text("paid");
+  replay[6] = Value::text("out");
+  replay[15] = Value::text("paid");
   CHECK(wr.insert("time_entries", replay).code() == ErrorCode::Constraint);
-  replay[14] = Value::text("recorded");
-  replay[17] = Value::integer(1);  // correction of entry 1
-  replay[18] = Value::text("wrong kind");
+  replay[15] = Value::text("recorded");
+  replay[18] = Value::integer(1);  // correction of entry 1
+  replay[19] = Value::text("wrong kind");
   REQUIRE_OK(wr.insert("time_entries", replay));
   // The corrected entry cannot be deleted while its correction points at it; nor the device while entries reference it.
   CHECK(wr.remove("time_entries", {Value::integer(1)}).code() == ErrorCode::Constraint);
@@ -137,14 +145,24 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
   // Supervisor assignment referencing its audit row; pay code must exist.
   REQUIRE_OK(wr.insert("supervisor_assignments", {Value::integer(1), Value::integer(2), Value::integer(1), now, Value::null(),
                                                   Value::text("installer"), Value::integer(1)}));
+  CHECK(wr.insert("supervisor_assignments", {Value::integer(2), Value::integer(1), Value::integer(2), now, Value::timestamp(1),
+                                             Value::text("installer"), Value::integer(1)}).code() == ErrorCode::Constraint);
   Row coded = entry;
   coded[0] = Value::integer(3);
   coded[1] = Value::uuid(uuid(12));
-  coded[4] = Value::integer(9);
-  coded[15] = Value::text("bonus");
+  coded[5] = Value::integer(9);
+  coded[16] = Value::text("bonus");
   CHECK(wr.insert("time_entries", coded).code() == ErrorCode::Constraint);
-  coded[15] = Value::text("overtime");
+  coded[16] = Value::text("overtime");
   REQUIRE_OK(wr.insert("time_entries", coded));
+  // A shift pairs entry 1 (in) with a later out; out before in is an engine check.
+  Row bad_shift = {Value::integer(1), Value::integer(1), Value::integer(1), Value::integer(1), Value::integer(3), Value::integer(19675),
+                   Value::integer(1), now, Value::timestamp(1'699'999'999'000'000), Value::integer(1), Value::null(), Value::text("recorded")};
+  CHECK(wr.insert("shifts", bad_shift).code() == ErrorCode::Constraint);
+  Row shift = bad_shift;
+  shift[8] = Value::timestamp(1'700'000'030'000'000);
+  shift[9] = Value::integer(30'000'000);
+  REQUIRE_OK(wr.insert("shifts", shift));
   REQUIRE_OK(wr.insert("approvals", {Value::integer(1), Value::integer(1), Value::integer(1), Value::text("submitted"), Value::text("approved"),
                                      Value::text("tid-1"), Value::text("oid-9"), Value::null(), now, Value::null(), Value::integer(1)}));
   CHECK(wr.insert("approvals", {Value::integer(2), Value::integer(1), Value::integer(1), Value::text("submitted"), Value::text("approved"),
@@ -154,7 +172,8 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
                                       Value::integer(1), Value::integer(1), Value::integer(1), Value::text("500ms"), now, Value::null(),
                                       Value::null(), Value::null()}));
   REQUIRE_OK(wr.insert("sync_batches", {Value::integer(1), Value::uuid(uuid(20)), Value::integer(1), now, Value::integer(7),
-                                        Value::integer(8), Value::integer(2), Value::integer(0)}));
+                                        Value::integer(8), Value::integer(2), Value::integer(0), Value::null(), Value::null(),
+                                        Value::uuid(uuid(40))}));
   REQUIRE_OK(wr.commit());
   auto rep = store.check();
   REQUIRE_OK(rep.status());
@@ -238,7 +257,7 @@ ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
         const std::uint64_t v = rd.value()->catalog().schema_version;
         REQUIRE_MSG(v <= 2, "schema version " << v << " after crash at step " << step);
         const std::size_t n = rd.value()->catalog().tables.size();
-        REQUIRE_MSG((v == 0 && n == 0) || (v == 1 && n == 6) || (v == 2 && n == 16),
+        REQUIRE_MSG((v == 0 && n == 0) || (v == 1 && n == 6) || (v == 2 && n == 17),
                     "partial schema (" << n << " tables at version " << v << ") after crash at step " << step);
       }
       auto r = core::migrate_all(*re.value(), {&punchline::module()});

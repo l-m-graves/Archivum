@@ -158,7 +158,7 @@ TableDef parents_def() {
                {"dev", ColumnType::Uuid, true, 0},      {"data", ColumnType::Blob, true, 0}};
   t.primary_key = {"id"};
   t.indexes = {{"parents_code", {"code"}, true, 0}, {"parents_u", {"u"}, true, 0}, {"parents_flag", {"flag", "when_"}, false, 0}};
-  t.checks = {{"amount_positive", "amount", CheckOp::Gt, {Value::decimal(0)}}};
+  t.checks = {{"amount_positive", "amount", CheckOp::Gt, {Value::decimal(0)}, ""}};
   return t;
 }
 TableDef children_def() {
@@ -170,7 +170,7 @@ TableDef children_def() {
   t.primary_key = {"parent_id", "seq"};
   t.indexes = {{"children_pu", {"parent_u"}, false, 0}, {"children_kind", {"kind", "note"}, false, 0}};
   t.foreign_keys = {{"fk_parent", {"parent_id"}, "parents", {"id"}}, {"fk_parent_u", {"parent_u"}, "parents", {"u"}}};
-  t.checks = {{"kind_known", "kind", CheckOp::In, {Value::text("a"), Value::text("b"), Value::text("c")}}};
+  t.checks = {{"kind_known", "kind", CheckOp::In, {Value::text("a"), Value::text("b"), Value::text("c")}, ""}};
   return t;
 }
 TableDef tags_def() {
@@ -181,7 +181,7 @@ TableDef tags_def() {
   t.primary_key = {"name"};
   t.indexes = {{"tags_child", {"child_parent", "child_seq"}, false, 0}};
   t.foreign_keys = {{"fk_child", {"child_parent", "child_seq"}, "children", {"parent_id", "seq"}}};
-  t.checks = {{"name_nonempty", "name", CheckOp::Ne, {Value::text("")}}, {"weight_range", "weight", CheckOp::Le, {Value::integer(100)}}};
+  t.checks = {{"name_nonempty", "name", CheckOp::Ne, {Value::text("")}, ""}, {"weight_range", "weight", CheckOp::Le, {Value::integer(100)}, ""}};
   return t;
 }
 

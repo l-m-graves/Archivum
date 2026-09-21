@@ -1,0 +1,57 @@
+{
+  "_comment": "The batch-ingest contract both servers must satisfy (punchline-updates.md section 10: identical except in authentication). Each scenario is a sequence of steps against a fresh store. A step posts one batch and asserts the outcome; 'stored' is the number of entry rows after the step. Runners: tests/contract/test_contract.py (FastAPI backend of the Punchline repository) and tests/server/server_contract_test.cpp (Archivum). Shapes differ by design (the prototype posts completed shifts with a self-asserted employee id under a shared token; Archivum posts punches under a per-device credential and derives the employee), so each runner maps the abstract entry to its server's wire shape; the semantics asserted here are the ones that must not differ.",
+  "scenarios": [
+    {
+      "name": "valid_batch_is_accepted",
+      "steps": [
+        {"batch": "b1", "entries": [{"id": 1}], "expect": {"accepted": [1], "rejected": [], "stored": 1}}
+      ]
+    },
+    {
+      "name": "replay_of_the_same_batch_is_idempotent",
+      "steps": [
+        {"batch": "b1", "entries": [{"id": 1}, {"id": 2}], "expect": {"accepted": [1, 2], "rejected": [], "stored": 2}},
+        {"batch": "b1", "entries": [{"id": 1}, {"id": 2}], "expect": {"accepted": [1, 2], "rejected": [], "stored": 2}}
+      ]
+    },
+    {
+      "name": "one_bad_entry_does_not_sink_the_batch",
+      "steps": [
+        {"batch": "b1", "entries": [{"id": 1}, {"id": 2, "invalid": "missing_required_field"}],
+         "expect": {"accepted": [1], "rejected": [2], "rejected_reason_mentions": ["required", "cost_center", "kind"], "stored": 1}}
+      ]
+    },
+    {
+      "name": "duplicate_uuid_inside_one_batch_stores_one_row",
+      "steps": [
+        {"batch": "b1", "entries": [{"id": 1}, {"id": 1}], "expect": {"accepted": [1, 1], "rejected": [], "stored": 1}}
+      ]
+    },
+    {
+      "name": "a_shift_over_the_limit_is_named_not_stored_silently",
+      "steps": [
+        {"batch": "b1", "entries": [{"id": 1, "minutes": 1500}], "expect": {"accepted_any_of": [[], [1]], "flagged": true, "stored_any_of": [0, 1]}}
+      ]
+    },
+    {
+      "name": "malformed_uuid_is_rejected_by_name",
+      "steps": [
+        {"batch": "b1", "entries": [{"id": 1, "invalid": "uuid"}], "expect": {"accepted": [], "rejected_count": 1, "stored": 0}}
+      ]
+    },
+    {
+      "name": "employee_id_in_the_body_is_the_deliberate_difference",
+      "_comment": "The prototype requires it; Archivum refuses the whole request with 400. Recorded so the difference is proven, not assumed.",
+      "steps": [
+        {"batch": "b1", "entries": [{"id": 1, "assert_employee_id": true}],
+         "expect_by_server": {"fastapi": {"accepted": [1], "stored": 1}, "archivum": {"http_status": 400, "stored": 0}}}
+      ]
+    },
+    {
+      "name": "unauthenticated_batch_is_refused",
+      "steps": [
+        {"batch": "b1", "entries": [{"id": 1}], "auth": "none", "expect": {"http_status": 401, "stored": 0}}
+      ]
+    }
+  ]
+}

@@ -37,6 +37,7 @@ archivum_add_test(cli_test cli/cli_test.cpp)
 archivum_add_test(concurrency_test unit/concurrency_test.cpp)
 archivum_add_test(core_test unit/core_test.cpp)
 archivum_add_test(punchline_rules_test unit/punchline_rules_test.cpp)
+archivum_add_test(punchline_sync_test unit/punchline_sync_test.cpp)
 set_tests_properties(db_test store_test backup_test concurrency_test PROPERTIES LABELS concurrency)
 set_tests_properties(cli_test PROPERTIES
   ENVIRONMENT "ARCHIVUM_BIN=$<TARGET_FILE:archivum>;ARCHIVUM_TMP=${CMAKE_CURRENT_BINARY_DIR}/cli-tmp"
@@ -59,4 +60,7 @@ endfunction()
 
 archivum_add_server_test(server_integration_test server/server_integration_test.cpp)
 archivum_add_server_test(server_core_test server/server_core_test.cpp)
+archivum_add_server_test(server_punchline_test server/server_punchline_test.cpp)
+archivum_add_server_test(server_contract_test server/server_contract_test.cpp)
+set_tests_properties(server_contract_test PROPERTIES ENVIRONMENT "ARCHIVUM_SOURCE_DIR=${CMAKE_SOURCE_DIR}")
 archivum_add_server_test(server_saturation_test server/server_saturation_test.cpp)

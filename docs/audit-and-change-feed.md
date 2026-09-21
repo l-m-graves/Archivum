@@ -52,7 +52,10 @@ and feed row for it.
 ## What the feed is for
 
 The change feed is the source for the analytical store's ingestion and
-for module consumers (Stage 6 uses it for exception detection after
-sync). A consumer reads `change_feed` ordered by id, in one read
-transaction, from its last seen id; the id is dense and increasing
-because it is allocated inside the writer. Nothing consumes it yet.
+for module consumers. A consumer reads `change_feed` ordered by id, in
+one read transaction, from its last seen id; the id is dense and
+increasing because it is allocated inside the writer. Nothing consumes
+it yet: Stage 6's exception detection runs inside the sync transaction
+itself (the pairing fold and the checks see the rows they just wrote),
+which is simpler and atomic with the batch, so the feed stays a v1.1
+consumer's input.

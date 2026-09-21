@@ -21,8 +21,9 @@
 // primary key, UNIQUE indexes (NULLs distinct), FOREIGN KEY with RESTRICT
 // semantics in both directions (a child row needs its parent at insert and
 // update; a parent row cannot be deleted or have its referenced key changed
-// while children point at it), and simple CHECKs (column op constant, or
-// column IN a list). A violation returns ErrorCode::Constraint and the
+// while children point at it), and simple CHECKs (column op constant,
+// column IN a list, or column op other column of the same row). A
+// violation returns ErrorCode::Constraint and the
 // message names the constraint.
 #pragma once
 
@@ -52,11 +53,16 @@ struct IndexDef {
 
 enum class CheckOp : std::uint8_t { Eq = 1, Ne, Lt, Le, Gt, Ge, In };
 
+// `column op constant`, `column IN (constants)`, or `column op other_column`
+// (Stage 6: a same-row comparison between two columns of the same type is
+// an engine check, so payroll invariants that can be enforced at rest
+// are). A NULL on either side passes, as in SQL.
 struct CheckDef {
   std::string name;
   std::string column;
   CheckOp op = CheckOp::Eq;
-  std::vector<Value> operands;  // one, or the IN list
+  std::vector<Value> operands;  // one, or the IN list; empty when other_column is set
+  std::string other_column;     // the right-hand column, for a column-to-column comparison
 };
 
 struct ForeignKeyDef {

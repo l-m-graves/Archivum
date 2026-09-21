@@ -30,9 +30,17 @@ own committed state.
 
 The Stage 5 ThreadSanitizer run found one violation of I1: the log's
 salt generator was a function-local static shared by every instance, and
-two instances on two threads raced on it in their checkpoints. Salts now
-come from a per-call `std::random_device`; the two-instance test runs on
-two threads (`concurrency_two_instances_on_two_threads`).
+two instances on two threads raced on it in their checkpoints. The Stage 5
+fix, a per-call `std::random_device`, could throw inside a checkpoint when
+the entropy source is unavailable, which the Stage 6 ruling judged the
+worse failure. Salts and database ids now come from libsodium's
+`randombytes_buf` (`archivum/entropy.h`): thread-safe, no state of ours,
+and unable to fail once `sodium_init()` has succeeded. `init_entropy()`
+runs at process start (the binary refuses to start otherwise) and again
+in `Db::open`, so a caller that skipped it fails at open, never inside a
+checkpoint. Two instances on two threads produce distinct salt pairs on
+every concurrent checkpoint
+(`concurrency_checkpoints_on_two_threads_produce_distinct_salts`).
 
 **I2. A transaction never spans instances.** `WriteTxn` is created by one
 `Db` and holds only that instance's writer lock; no API takes two

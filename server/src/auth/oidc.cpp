@@ -208,7 +208,7 @@ drogon::Task<Result<Principal>> OidcValidator::authenticate(std::string authoriz
     expired = std::chrono::system_clock::now() >= expires_at_;
   }
   if (expired) {
-    if (Status s = co_await refresh_jwks(); !s.ok()) co_return s;
+    if (Status s = co_await refresh_single_flight(/*floor=*/false); !s.ok()) co_return s;
   }
 
   bool unknown_kid = false;
@@ -221,22 +221,51 @@ drogon::Task<Result<Principal>> OidcValidator::authenticate(std::string authoriz
   }();
   if (first.ok() || !unknown_kid) co_return first;
 
-  // Unknown kid: one refresh, rate-limited so a flood of bad kids cannot
-  // hammer the issuer.
-  bool allowed = false;
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    const auto floor = std::chrono::seconds(config_.jwks_refresh_min_interval_seconds);
-    allowed = std::chrono::steady_clock::now() - last_refresh_started_ >= floor;
-    if (!allowed) ++refreshes_suppressed_;
-  }
-  if (!allowed) co_return Status::invalid_argument("unknown kid; refresh suppressed by rate floor");
-  if (Status s = co_await refresh_jwks(); !s.ok()) co_return s;
+  // Unknown kid: one refresh, shared by every request that hits it at the
+  // same time, and rate-limited so a flood of bad kids cannot hammer the
+  // issuer.
+  if (Status s = co_await refresh_single_flight(/*floor=*/true); !s.ok()) co_return s;
   try {
     co_return verify_with_cached_keys(token, unknown_kid);
   } catch (const std::exception& e) {
     co_return Status::invalid_argument(std::string("token undecodable: ") + e.what());
   }
+}
+
+drogon::Task<Status> OidcValidator::refresh_single_flight(bool floor) {
+  enum class Role { Fetch, Wait, Refuse };
+  Role role = Role::Fetch;
+  std::uint64_t generation = 0;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    generation = refresh_generation_;
+    if (refresh_in_flight_) {
+      ++refreshes_joined_;
+      role = Role::Wait;
+    } else if (floor && std::chrono::steady_clock::now() - last_refresh_started_ <
+                            std::chrono::seconds(config_.jwks_refresh_min_interval_seconds)) {
+      ++refreshes_suppressed_;
+      role = Role::Refuse;
+    } else {
+      refresh_in_flight_ = true;
+    }
+  }
+  if (role == Role::Refuse) co_return Status::invalid_argument("unknown kid; refresh suppressed by rate floor");
+  if (role == Role::Fetch) {
+    Status s = co_await refresh_jwks();
+    std::lock_guard<std::mutex> lock(mu_);
+    refresh_in_flight_ = false;
+    ++refresh_generation_;
+    co_return s;
+  }
+  // A refresh is in flight on another request: wait for it to finish
+  // (bounded), then the caller re-verifies against the refreshed keys.
+  for (int i = 0; i < 2000; ++i) {
+    co_await drogon::sleepCoro(trantor::EventLoop::getEventLoopOfCurrentThread(), std::chrono::milliseconds(5));
+    std::lock_guard<std::mutex> lock(mu_);
+    if (refresh_generation_ != generation) co_return Status();
+  }
+  co_return Status::io("JWKS refresh in flight did not finish in time");
 }
 
 OidcValidator::Snapshot OidcValidator::snapshot() const {
@@ -248,6 +277,7 @@ OidcValidator::Snapshot OidcValidator::snapshot() const {
   s.expires_at = expires_at_;
   s.refreshes = refreshes_;
   s.refreshes_suppressed = refreshes_suppressed_;
+  s.refreshes_joined = refreshes_joined_;
   return s;
 }
 

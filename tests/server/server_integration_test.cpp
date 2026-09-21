@@ -2,6 +2,7 @@
 // fetching discovery and JWKS over verified HTTPS, and an Entra-shaped
 // token validated end to end against the local test issuer. Also: the
 // negative cases that make "validated" mean something.
+#include <atomic>
 #include <chrono>
 #include <cstring>
 #include <thread>
@@ -199,6 +200,40 @@ ARCHIVUM_TEST(unknown_kid_triggers_one_rate_limited_refresh) {
   after = f.app->validator()->snapshot();
   CHECK(after.refreshes == before.refreshes + 2);
   CHECK(after.key_count == 2);
+}
+
+// Stage 6: N requests presenting an unknown kid at the same instant share
+// one refresh (single-flight) and every one of them is then accepted;
+// none is refused by the rate floor. Runs under ThreadSanitizer in CI.
+ARCHIVUM_TEST(concurrent_unknown_kid_requests_share_one_refresh) {
+  auto& f = fixture();
+  REQUIRE_OK(f.run_status);
+  auto k3 = pki::generate_rsa();
+  REQUIRE_OK(k3.status());
+  f.issuer->add_key("k3", k3.value());
+  TestIssuer::Claims c;
+  c.kid = "k3";
+  std::this_thread::sleep_for(std::chrono::milliseconds(1100));  // clear the 1 s floor
+  const auto before = f.app->validator()->snapshot();
+  const std::string token = f.issuer->mint(c);
+  constexpr int kThreads = 12;
+  std::atomic<int> ok{0}, other{0};
+  std::vector<std::thread> threads;
+  threads.reserve(kThreads);
+  for (int i = 0; i < kThreads; ++i) {
+    threads.emplace_back([&] {
+      auto r = f.get("/api/v1/whoami", "Bearer " + token);
+      if (r.status == 200) ok.fetch_add(1);
+      else other.fetch_add(1);
+    });
+  }
+  for (auto& t : threads) t.join();
+  const auto after = f.app->validator()->snapshot();
+  CHECK_MSG(ok.load() == kThreads, ok.load() << " accepted, " << other.load() << " refused");
+  CHECK_MSG(after.refreshes == before.refreshes + 1, "refreshes " << before.refreshes << " -> " << after.refreshes);
+  CHECK(after.refreshes_suppressed == before.refreshes_suppressed);
+  CHECK(after.key_count >= 2);
+  f.issuer->remove_key("k3");
 }
 
 ARCHIVUM_TEST(expired_cache_is_refreshed_per_max_age) {

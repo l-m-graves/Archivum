@@ -58,6 +58,11 @@ class App {
   std::int64_t now_us() const { return store_->db().now_us(); }
   // Test hook: a deterministic clock for the store.
   void set_clock_for_test(std::int64_t (*clock)()) { clock_ = clock; }
+  // Module background work (freshness monitoring): after auth is up,
+  // before the store closes. Idempotent.
+  void start_modules();
+  void stop_modules();
+  const std::vector<ServerModule>& modules() const { return modules_; }
 
  private:
   Config config_;

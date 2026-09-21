@@ -3,6 +3,7 @@
 #include <map>
 #include <thread>
 
+#include "archivum/core/module.h"
 #include "archivum/engine/migrate.h"
 #include "archivum/engine/recovery.h"
 #include "archivum/punchline/schema.h"
@@ -198,4 +199,51 @@ ARCHIVUM_TEST(point_in_time_recovery_by_counter_and_by_time) {
   CHECK(dump_bytes(*Store::open(vfs, "d/pitr-archived.db", opts()).value()) == dumps[arch.value().change_counter]);
   // Output must not exist.
   CHECK(recover_to_point(vfs, "d/base.db", "d/archive", "", all, "d/pitr-archived.db").status().code() == ErrorCode::AlreadyExists);
+}
+
+// Stage 6: the off-host shipper verifies every copy before counting it.
+// file_digest agrees between a file and its copy and disagrees after a
+// truncation or a flipped byte; verify_backup_file accepts a backup and
+// names the page a corruption lands in.
+ARCHIVUM_TEST(backup_and_segment_verification_helpers) {
+  MemVfs vfs;
+  auto st = Store::open(vfs, "v/live.db", opts());
+  REQUIRE_OK(st.status());
+  Store& store = *st.value();
+  REQUIRE_OK(core::migrate_all(store, {&punchline::module()}).status());
+  for (int i = 1; i <= 50; ++i) {
+    auto w = store.begin_write();
+    REQUIRE_OK(w.status());
+    REQUIRE_OK(w.value()->insert("employees", employee(i, i)));
+    REQUIRE_OK(w.value()->commit());
+  }
+  auto cc = store.backup(vfs, "v/backup.db");
+  REQUIRE_OK(cc.status());
+  REQUIRE_OK(verify_backup_file(vfs, "v/backup.db"));
+  REQUIRE_OK(copy_file(vfs, "v/backup.db", "v/copy.db"));
+  auto a = file_digest(vfs, "v/backup.db");
+  auto b = file_digest(vfs, "v/copy.db");
+  REQUIRE_OK(a.status());
+  REQUIRE_OK(b.status());
+  CHECK(a.value() == b.value());
+  CHECK(a.value().size > 0);
+  // A truncated copy: size differs.
+  std::vector<std::byte> bytes = vfs.contents("v/copy.db");
+  bytes.resize(bytes.size() - 100);
+  vfs.put("v/short.db", bytes);
+  CHECK(!(file_digest(vfs, "v/short.db").value() == a.value()));
+  Status short_status = verify_backup_file(vfs, "v/short.db");
+  CHECK(short_status.code() == ErrorCode::Corrupt);
+  // A flipped byte in the middle: same size, different CRC, and the page is named.
+  bytes = vfs.contents("v/copy.db");
+  bytes[bytes.size() / 2] ^= std::byte{0x40};
+  vfs.put("v/flipped.db", bytes);
+  auto f = file_digest(vfs, "v/flipped.db");
+  REQUIRE_OK(f.status());
+  CHECK(f.value().size == a.value().size && f.value().crc32c != a.value().crc32c);
+  Status flipped = verify_backup_file(vfs, "v/flipped.db");
+  CHECK(flipped.code() == ErrorCode::Corrupt);
+  CHECK_MSG(flipped.message().find("page") != std::string::npos, flipped.message());
+  // A missing file is NotFound, not a false verification.
+  CHECK(file_digest(vfs, "v/none.db").status().code() == ErrorCode::NotFound);
 }

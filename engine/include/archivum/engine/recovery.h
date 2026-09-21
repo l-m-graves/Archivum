@@ -44,7 +44,22 @@ Result<RecoveryReport> recover_to_point(Vfs& vfs, const std::string& backup_path
                                         const std::string& live_wal_path, const RecoveryTarget& target,
                                         const std::string& out_path);
 
-// Byte copy of a file through the VFS, synced.
+// Byte copy of a file through the VFS, synced (file, then its directory).
 Status copy_file(Vfs& vfs, const std::string& from, const std::string& to);
+
+// CRC32C of a whole file, with its size. For verifying a copy against its
+// source before counting it as shipped (Stage 6 ruling: a truncated copy
+// the health check counts as off-host defeats off-host archiving).
+struct FileDigest {
+  std::uint64_t size = 0;
+  std::uint32_t crc32c = 0;
+  bool operator==(const FileDigest& o) const { return size == o.size && crc32c == o.crc32c; }
+};
+Result<FileDigest> file_digest(Vfs& vfs, const std::string& path);
+
+// Verifies a backup file page by page: header decodable, size a whole
+// number of pages matching the header's page count, every page's checksum
+// intact. Corrupt names the first bad page.
+Status verify_backup_file(Vfs& vfs, const std::string& path);
 
 }  // namespace archivum::engine

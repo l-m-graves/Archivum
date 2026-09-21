@@ -25,5 +25,17 @@
     "backup_cadence_seconds": 86400
   },
   "logging": { "level": "info", "file": "C:/ProgramData/Archivum/log/archivum.log" },
-  "trusted_proxies": []
+  "trusted_proxies": [],
+  "modules": {
+    "punchline": {
+      "long_shift_hours": 16,
+      "clock_divergence_tolerance_seconds": 300,
+      "device_attested_threshold": 20,
+      "device_stale_seconds": 86400,
+      "schedule_tolerance_minutes": 30,
+      "employee_id_rejection_threshold": 5,
+      "monitor_interval_seconds": 60,
+      "max_batch_entries": 500
+    }
+  }
 }

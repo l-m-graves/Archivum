@@ -26,7 +26,7 @@ CheckDef one_of(const char* name, const char* column, std::vector<const char*> v
   return c;
 }
 CheckDef non_empty(const char* name, const char* column) {
-  return CheckDef{name, column, CheckOp::Ne, {Value::text("")}};
+  return CheckDef{name, column, CheckOp::Ne, {Value::text("")}, ""};
 }
 
 TableDef audit_log() {

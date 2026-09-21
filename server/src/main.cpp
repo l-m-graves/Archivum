@@ -12,6 +12,7 @@
 #include "archivum/core/accounts.h"
 #include "archivum/core/module.h"
 #include "archivum/engine/migrate.h"
+#include "archivum/entropy.h"
 #include "archivum/engine/recovery.h"
 #include "archivum/engine/store.h"
 #include "archivum/punchline/schema.h"
@@ -231,6 +232,9 @@ bool has_all(const std::map<std::string, std::string>& a, const std::vector<std:
 
 int main(int argc, char** argv) {
   if (argc < 2) return usage();
+  // Randomness is initialised once, here; a process that cannot get it
+  // does not start (Stage 6 ruling: never fail inside a checkpoint).
+  if (archivum::Status s = archivum::init_entropy(); !s.ok()) return fail("startup", s);
   const std::string command = argv[1];
   std::map<std::string, std::string> a;
   if (command == "version") {

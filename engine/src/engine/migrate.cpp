@@ -13,8 +13,8 @@ TableDef migrations_table() {
                {"name", ColumnType::Text, false, 0},
                {"applied_at", ColumnType::Timestamp, false, 0}};
   t.primary_key = {"module", "version"};
-  t.checks = {{"name_nonempty", "name", CheckOp::Ne, {Value::text("")}},
-              {"module_nonempty", "module", CheckOp::Ne, {Value::text("")}}};
+  t.checks = {{"name_nonempty", "name", CheckOp::Ne, {Value::text("")}, ""},
+              {"module_nonempty", "module", CheckOp::Ne, {Value::text("")}, ""}};
   return t;
 }
 

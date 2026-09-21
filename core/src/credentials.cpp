@@ -3,19 +3,16 @@
 #include <sodium.h>
 
 #include <cstring>
-#include <mutex>
+
+#include "archivum/entropy.h"
 
 namespace archivum::core {
 namespace {
 
-void ensure_sodium() {
-  static std::once_flag once;
-  std::call_once(once, [] {
-    // -1 means the library could not initialise; every call below would
-    // then fail closed (randombytes aborts, pwhash returns -1).
-    [[maybe_unused]] const int rc = sodium_init();
-  });
-}
+// The process initialised libsodium at startup (archivum::init_entropy,
+// which every Db::open also calls); this is the idempotent re-check, so a
+// unit test that never opened a database still gets a working library.
+void ensure_sodium() { (void)init_entropy(); }
 
 const char* kAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 

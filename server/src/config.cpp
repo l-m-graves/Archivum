@@ -85,7 +85,7 @@ Result<Config> parse_config(const std::string& json_text) {
     return Status::invalid_argument(std::string("config is not valid JSON: ") + e.what());
   }
   Config c;
-  if (Status s = expect_keys(root, "config", {"listen", "tls", "oidc", "database", "backup", "logging", "trusted_proxies"});
+  if (Status s = expect_keys(root, "config", {"listen", "tls", "oidc", "database", "backup", "logging", "trusted_proxies", "modules"});
       !s.ok()) {
     return s;
   }
@@ -215,6 +215,15 @@ Result<Config> parse_config(const std::string& json_text) {
 
   if (root.contains("trusted_proxies")) {
     if (Status s = get_opt(root, "trusted_proxies", "config", c.trusted_proxies); !s.ok()) return s;
+  }
+
+  if (root.contains("modules")) {
+    const json& m = root["modules"];
+    if (!m.is_object()) return Status::invalid_argument("modules must be an object keyed by module name");
+    for (const auto& [name, section] : m.items()) {
+      if (!section.is_object()) return Status::invalid_argument("modules." + name + " must be an object");
+      c.modules[name] = section;
+    }
   }
   return c;
 }
