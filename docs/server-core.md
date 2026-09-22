@@ -97,12 +97,13 @@ final rename: a segment's copy is read back from the destination under
 its final name and its size and CRC32C compared with the source; a backup
 is checked page by page against its own checksums. A mismatch removes the
 file, fails the pass, is an alert, and is counted in `/healthz` as
-`archive.verification_failures`. Durability of the name: the file is
-synced and renamed into place with `MoveFileExW(MOVEFILE_WRITE_THROUGH)`
-on Windows, or `rename` plus a directory `fsync` on POSIX; the
-checkpoint's own archive write does the same on the local side. What a
-rename on an SMB share does and does not guarantee is in
-`docs/durability.md`.
+`archive.verification_failures`. The name: the file is synced and renamed into place
+(`MoveFileExW` with `MOVEFILE_WRITE_THROUGH` on Windows, `rename` plus a
+directory `fsync` on POSIX), but the archive's durability argument is
+the idempotent re-ship, not the rename: a rename lost to a crash leaves
+the segment absent and the next pass copies and verifies it again. What
+the flag does and does not guarantee, and what an SMB share does and
+does not, is in `docs/durability.md`.
 `/healthz` returns 503 with `archive.problem` until the first successful
 pass and whenever the last success is older than twice the cadence; a
 failing pass is an alert. Tested end to end in

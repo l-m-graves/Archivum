@@ -44,13 +44,15 @@ Status ArchiveShipper::ship_once() {
   if (local.ok()) {
     for (const std::string& name : local.value()) {
       if (name.size() < 4 || name.substr(name.size() - 4) != ".wal" || have.count(name)) continue;
-      // Copy to a temporary name, rename it into place (write-through on
-      // Windows, directory fsync on POSIX), then verify the file under its
-      // final name against the source: size and CRC32C, read back from the
-      // destination after the rename, so that whatever the rename did on
-      // the destination's file system is what gets checked. A mismatch
-      // removes the final file (the next pass copies it again) and fails
-      // the pass; nothing is counted as shipped that did not verify.
+      // Copy to a temporary name, rename it into place, then verify the
+      // file under its final name against the source: size and CRC32C,
+      // read back from the destination after the rename, so that whatever
+      // the rename did on the destination's file system is what gets
+      // checked. A mismatch removes the final file and fails the pass;
+      // nothing is counted as shipped that did not verify. The durability
+      // argument is this idempotent re-ship, not the rename: a rename lost
+      // to a crash leaves the segment absent, and the next pass copies and
+      // verifies it again (docs/durability.md).
       const std::string src = database_.archive_dir + "/" + name;
       const std::string tmp = backup_.destination + "/" + name + ".part";
       const std::string final_name = backup_.destination + "/" + name;

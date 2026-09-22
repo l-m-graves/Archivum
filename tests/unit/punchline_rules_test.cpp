@@ -15,7 +15,7 @@ namespace {
 
 Row employee(std::int64_t id) {
   return {Value::integer(id), Value::text("E" + std::to_string(id)), Value::text("Name"), Value::null(), Value::null(),
-          Value::null(), Value::boolean(true), Value::null(), Value::text("UTC"), Value::timestamp(1), Value::timestamp(1)};
+          Value::null(), Value::boolean(true), Value::null(), Value::text("UTC"), Value::timestamp(1), Value::timestamp(1), Value::null(), Value::null()};
 }
 Row device(std::int64_t id, std::int64_t employee, bool revoked) {
   UuidBytes u{};

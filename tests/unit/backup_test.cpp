@@ -47,7 +47,7 @@ std::string dump_bytes(Store& s) {
 Row employee(std::int64_t id, std::int64_t at) {
   return {Value::integer(id), Value::text("E" + std::to_string(id)), Value::text("Name " + std::to_string(id)),
           Value::null(), Value::null(), Value::null(), Value::boolean(true), Value::null(), Value::text("UTC"),
-          Value::timestamp(at), Value::timestamp(at)};
+          Value::timestamp(at), Value::timestamp(at), Value::null(), Value::null()};
 }
 
 }  // namespace

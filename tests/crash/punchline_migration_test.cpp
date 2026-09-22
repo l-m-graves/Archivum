@@ -74,15 +74,15 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
   // Employee with an Entra identity; a second with none (oid nullable).
   REQUIRE_OK(wr.insert("employees", {Value::integer(1), Value::text("E001"), Value::text("Ada"), Value::text("ada@example.test"),
                                      Value::text("tid-1"), Value::text("oid-1"), Value::boolean(true), Value::null(),
-                                     Value::text("America/Los_Angeles"), now, now}));
+                                     Value::text("America/Los_Angeles"), now, now, Value::null(), Value::null()}));
   REQUIRE_OK(wr.insert("employees", {Value::integer(2), Value::text("E002"), Value::text("Bob"), Value::null(), Value::null(),
-                                     Value::null(), Value::boolean(true), Value::null(), Value::text("America/Los_Angeles"), now, now}));
+                                     Value::null(), Value::boolean(true), Value::null(), Value::text("America/Los_Angeles"), now, now, Value::null(), Value::null()}));
   // The same oid twice in one tenant is refused; an empty employee number too.
   CHECK(wr.insert("employees", {Value::integer(3), Value::text("E003"), Value::text("Cy"), Value::null(), Value::text("tid-1"),
-                                Value::text("oid-1"), Value::boolean(true), Value::null(), Value::text("UTC"), now, now})
+                                Value::text("oid-1"), Value::boolean(true), Value::null(), Value::text("UTC"), now, now, Value::null(), Value::null()})
             .code() == ErrorCode::Constraint);
   CHECK(wr.insert("employees", {Value::integer(3), Value::text(""), Value::text("Cy"), Value::null(), Value::null(), Value::null(),
-                                Value::boolean(true), Value::null(), Value::text("UTC"), now, now})
+                                Value::boolean(true), Value::null(), Value::text("UTC"), now, now, Value::null(), Value::null()})
             .code() == ErrorCode::Constraint);
   // Roles: supervisor and payroll are separate grants on the same principal; a bogus role is refused.
   REQUIRE_OK(wr.insert("role_grants", {Value::integer(1), Value::text("tid-1"), Value::text("oid-9"), Value::text("supervisor"),

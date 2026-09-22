@@ -199,10 +199,12 @@ class Win32Vfs final : public Vfs {
   }
 
   Status sync_directory(const std::string& dir) override {
-    // There is no directory fsync on Win32. Rename durability comes from
-    // MoveFileExW's MOVEFILE_WRITE_THROUGH above, which does not return
-    // until the move is flushed (docs/durability.md); this call therefore
-    // has nothing left to do and returns ok rather than pretending.
+    // There is no directory fsync on Win32. MoveFileExW's
+    // MOVEFILE_WRITE_THROUGH above is documented to flush a cross-volume
+    // (copy-and-delete) move before returning; a same-volume rename is
+    // atomic with no documented flush guarantee (docs/durability.md). The
+    // archive does not rely on the rename for durability: the shipper
+    // re-copies and re-verifies anything a lost rename leaves absent.
     (void)dir;
     return Status();
   }

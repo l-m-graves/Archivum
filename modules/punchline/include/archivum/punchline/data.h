@@ -17,6 +17,7 @@ struct Employee {
   std::string employee_number, display_name, email, tid, oid, pay_group, site_zone;
   bool active = true;
   std::int64_t created_at = 0, updated_at = 0;
+  std::string company, cost_center;  // the old store's routing key; server-owned
   engine::Row to_row() const;
   static Employee from_row(const engine::Row& r);
 };

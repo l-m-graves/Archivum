@@ -12,6 +12,7 @@
 #include "archivum/punchline/exceptions.h"
 #include "archivum/punchline/lifecycle.h"
 #include "archivum/punchline/localtime.h"
+#include "archivum/punchline/rollback.h"
 #include "archivum/punchline/schema.h"
 #include "archivum/punchline/sync.h"
 #include "archivum/testing/mem_vfs.h"
@@ -436,4 +437,72 @@ ARCHIVUM_TEST(lifecycle_transitions_are_ordered_audited_and_reach_payroll_only_b
   REQUIRE_OK(w.sync(after_lock).status());
   CHECK(w.open_kinds("past_cutoff").size() == 1);
   CHECK(w.entries().back().period_id == 0);
+}
+
+// The rollback export: every closed shift of the period as one old-store
+// entry in the old client's batch shape, keyed by the in punch's uuid,
+// with name, company and cost centre from the employee record, minutes
+// computed, open shifts skipped, batched per device.
+ARCHIVUM_TEST(rollback_export_rewrites_shifts_as_old_store_batches) {
+  World w;
+  w.open();
+  {
+    auto wr = w.store->begin_write();
+    REQUIRE_OK(wr.status());
+    auto e = employee_by_id(*wr.value(), 1);
+    Employee emp = *e.value();
+    emp.company = "ACME";
+    emp.cost_center = "4400";
+    REQUIRE_OK(wr.value()->update("employees", emp.to_row()));
+    REQUIRE_OK(wr.value()->commit());
+  }
+  IncomingBatch b;
+  b.batch_uuid = uid(110);
+  b.journal_id = uid(500);
+  b.entries = {w.punch(1, 1, "in", 0, 9), w.punch(2, 2, "out", 0, 17, 30), w.punch(3, 3, "in", 1, 8), w.punch(4, 4, "out", 1, 12),
+               w.punch(5, 5, "in", 2, 9)};  // the last is open
+  b.entries[0].note = "line 3";
+  REQUIRE_OK(w.sync(b).status());
+  auto rd = w.store->begin_read();
+  auto ex = rollback_export(*rd.value(), 1, false, kMonday + 7 * 86400 * kUs);
+  REQUIRE_OK(ex.status());
+  CHECK(ex.value().shifts == 2 && ex.value().open_shifts_skipped == 1 && ex.value().employees_without_routing == 0);
+  REQUIRE(ex.value().batches.size() == 1);
+  const nlohmann::json& batch = ex.value().batches[0];
+  CHECK(batch["device_id"] == engine::Value::uuid(uid(900)).to_string());
+  CHECK(batch["client_version"] == "archivum-rollback");
+  CHECK(batch["submitted_at"] == "2024-03-11T00:00:00Z");
+  REQUIRE(batch["entries"].size() == 2);
+  const nlohmann::json& first = batch["entries"][0];
+  CHECK(first["uuid"] == engine::Value::uuid(uid(1)).to_string());
+  CHECK(first["employee_id"] == "E1" && first["employee_name"] == "Worker");
+  CHECK(first["company"] == "ACME" && first["cost_center"] == "4400");
+  CHECK(first["clock_in"] == "2024-03-04T09:00:00Z" && first["clock_out"] == "2024-03-04T17:30:00Z");
+  CHECK(first["minutes"] == 510 && first["note"] == "line 3");
+  CHECK(first["archivum_state"] == "recorded");
+  // Only the keys the old server names, plus the operator's state key.
+  for (const auto& [k, v] : first.items()) {
+    CHECK_MSG(k == "uuid" || k == "employee_id" || k == "employee_name" || k == "company" || k == "cost_center" || k == "clock_in" ||
+                  k == "clock_out" || k == "minutes" || k == "note" || k == "archivum_state",
+              k);
+  }
+  // released_only: nothing yet; after release, both.
+  auto none = rollback_export(*rd.value(), 1, true, kMonday);
+  REQUIRE_OK(none.status());
+  CHECK(none.value().shifts == 0 && none.value().batches.empty());
+  CHECK(rollback_export(*rd.value(), 42, false, kMonday).status().code() == ErrorCode::NotFound);
+  // Missing routing is exported with empty strings and counted, never refused.
+  rd.value().reset();
+  {
+    auto wr = w.store->begin_write();
+    auto e = employee_by_id(*wr.value(), 1);
+    Employee emp = *e.value();
+    emp.cost_center = "";
+    REQUIRE_OK(wr.value()->update("employees", emp.to_row()));
+    REQUIRE_OK(wr.value()->commit());
+  }
+  rd = w.store->begin_read();
+  auto missing = rollback_export(*rd.value(), 1, false, kMonday);
+  REQUIRE_OK(missing.status());
+  CHECK(missing.value().employees_without_routing == 2 && missing.value().batches[0]["entries"][0]["cost_center"] == "");
 }

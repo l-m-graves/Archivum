@@ -222,6 +222,19 @@ ARCHIVUM_TEST(b_sync_is_idempotent_with_per_entry_outcomes) {
   nlohmann::json huge = batch(3, {});
   for (int i = 0; i < 501; ++i) huge["entries"].push_back(punch(100 + i, 100 + i, "in", 0, 1));
   CHECK(f.post("/api/v1/device/sync", huge.dump(), device).status == 413);
+  // The old client's server-owned values are refused, per entry, by name:
+  // name, company and cost centre come from the employee record and
+  // minutes from the punches (Stage 6 rulings, item 3b).
+  for (const char* key : {"employee_name", "company", "cost_center", "minutes"}) {
+    nlohmann::json owned = batch(30, {punch(60, 60, "in", 0, 9)});
+    owned["entries"][0][key] = key == std::string("minutes") ? nlohmann::json(480) : nlohmann::json("asserted");
+    auto rr = f.post("/api/v1/device/sync", owned.dump(), device);
+    REQUIRE_MSG(rr.status == 200, rr.body);
+    const auto jj = parse(rr.body);
+    CHECK_MSG(jj["accepted"].empty() && jj["rejected"].size() == 1, key << ": " << rr.body);
+    CHECK_MSG(jj["rejected"][0]["reason"].get<std::string>().find(key) != std::string::npos, rr.body);
+  }
+  CHECK(open_exceptions("entry_rejected") == 1);
   // The note is free text: never by value in the feed or the audit log.
   // Every key the contract names, in one batch (docs/punchline-module.md, "Sync").
   nlohmann::json b4 = batch(4, {punch(13, 13, "in", 4, 9)});
@@ -427,7 +440,7 @@ ARCHIVUM_TEST(g_employee_id_from_a_device_is_a_tamper_signal) {
   REQUIRE(devices.status == 200);
   CHECK(parse(devices.body)["devices"][0]["employee_id_rejections"].get<int>() >= 3);
   // Nothing was recorded from those requests.
-  CHECK(audit_count("sync.batch") == 6);
+  CHECK(audit_count("sync.batch") == 10);  // 6 accepted batches, 4 refused-key batches (each still one audited request)
   // The same key from a principal is logged with the caller, not counted.
   auto r = f.post("/api/v1/admin/employees", nlohmann::json{{"employee_id", 1}}.dump(), admin());
   CHECK(r.status == 400);

@@ -74,7 +74,12 @@ TableDef employees() {
                col("pay_group", ColumnType::Text, true),
                col("site_zone", ColumnType::Text),
                col("created_at", ColumnType::Timestamp),
-               col("updated_at", ColumnType::Timestamp)};
+               col("updated_at", ColumnType::Timestamp),
+               // The old store's routing key (company, cost centre), owned by
+               // the server: never taken from a device, exported to the old
+               // store on rollback (docs/punchline-module.md, "Rollback").
+               col("company", ColumnType::Text, true),
+               col("cost_center", ColumnType::Text, true)};
   t.primary_key = {"id"};
   t.indexes = {index("employees_number", {"employee_number"}, true),
                index("employees_identity", {"tid", "oid"}, true),
@@ -425,7 +430,7 @@ const std::vector<Migration>& migrations() {
 
 void Module::extend_policy(core::RecordPolicy& p) const {
   p.allow("employees", {"id", "employee_number", "display_name", "email", "tid", "oid", "active", "pay_group", "site_zone",
-                        "created_at", "updated_at"});
+                        "created_at", "updated_at", "company", "cost_center"});
   p.allow("devices", {"id", "device_uuid", "name", "employee_id", "enrolled_at", "enrolled_by", "revoked_at", "revoked_reason",
                       "last_seen_at", "last_acked_sequence", "last_journal_id", "employee_id_rejections"});
   p.allow("pay_periods", {"id", "start_day", "end_day", "site_zone", "tzdb_version", "state", "submit_by", "approve_by", "release_at"});

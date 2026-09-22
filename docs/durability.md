@@ -86,27 +86,47 @@ cadence.
 
 Every file the engine or the server puts in place under its final name
 (an archived log segment, an off-host copy, a backup, a restored database)
-is written under a temporary name, synced, and renamed. What makes the
-rename itself durable differs by platform:
+is written under a temporary name, synced, and renamed. What the rename
+itself guarantees differs by platform, and the guarantees are narrower
+than "the rename is durable":
 
 - **POSIX**: `rename(2)` followed by `fsync` of the parent directory
   (`Vfs::sync_directory`). Without the directory sync the rename is atomic
-  but not durable: a crash can bring back the old directory entry.
+  but not durable: a crash can bring back the old directory entry. With
+  it, the new name is durable.
 - **Windows**: `MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING |
-  MOVEFILE_WRITE_THROUGH)`. There is no directory fsync on Win32; the
-  write-through flag is the mechanism, and `Vfs::sync_directory` has
-  nothing left to do there. Evidence: Microsoft's reference page for
-  `MoveFileExW` ("MoveFileExW function (winbase.h)",
-  `learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw`)
-  documents `MOVEFILE_WRITE_THROUGH` as "the function does not return until
-  the file is actually moved on the disk", with the note that when the
-  move is within a volume the flag "guarantees that the move is flushed
-  before the function returns". **Verification status**: that page could
-  not be fetched from this environment (the egress proxy returns no
-  response for `learn.microsoft.com`); the wording above is quoted from
-  memory of the page and must be checked against it by someone who can
-  read it before the handbook cites it. The flag's presence in the code
-  is not in doubt (`engine/src/vfs_win32.cpp`, `rename`).
+  MOVEFILE_WRITE_THROUGH)`, for every rename, local and at the
+  destination (`engine/src/vfs_win32.cpp`). Microsoft's reference page for
+  `MoveFileExW` (`learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw`,
+  read and confirmed 2026-09-22) documents `MOVEFILE_WRITE_THROUGH` as
+  guaranteeing that a move performed as a copy-and-delete operation is
+  flushed to disk before the function returns, the flush occurring at the
+  end of the copy. That is the **cross-volume** case. For a
+  **same-volume** rename, which is what the local archive does and what
+  the shipper does when the temporary and final names sit in the same
+  destination directory, the page documents no flush guarantee: the
+  rename is atomic (the new name appears or it does not) and that is the
+  whole of the documented contract. NTFS journals its metadata, which is
+  why a same-volume rename survives a crash in practice; that is an
+  observation about NTFS, not a promise Archivum relies on, and there is
+  no directory fsync on Win32 to add one.
+
+**The durability argument for the archive is therefore not the rename.**
+It is that the shipper is idempotent and verifies:
+
+- a checkpoint's archive write is redone by the next checkpoint if its
+  rename was lost (the segment is named by its base change counter and
+  rewritten with a superset of its commits; `docs/backup-recovery.md`);
+- the shipper copies every segment the destination lacks, so a rename
+  lost to a crash at the destination means the segment is simply absent
+  on the next pass and is copied and verified again;
+- nothing counts as shipped, and the health check is not satisfied,
+  until the file has been read back under its final name and matched
+  against the source.
+
+A lost rename costs one pass of the cadence, never a segment. That
+argument holds on every platform and every file system, including the
+ones below, and it is the one the handbook should cite.
 
 ### The off-host destination on a network share
 
@@ -127,7 +147,9 @@ promise there:
   the call returns depends on the server's implementation and its own
   storage; the client has no way to observe it, and a read-back can be
   served from the server's cache. Archivum makes no claim about the
-  server's durability and the handbook must not either.
+  server's durability and the handbook must not either. The idempotent
+  re-ship above is what covers a copy the server later loses: on the
+  next pass the segment is absent, and is copied and verified again.
 - **What to do about it**: put the share on a server whose file system
   journals metadata and whose storage honours flushes, keep the shipped
   copies out of the server's reach for deletion, and run the monthly

@@ -217,7 +217,7 @@ ARCHIVUM_TEST(concurrency_backup_checkpoint_archive_and_writers) {
       auto w = store.begin_write();
       if (!w.ok() || !w.value()->insert("employees", {Value::integer(i), Value::text("E" + std::to_string(i)), Value::text("N"),
                                                        Value::null(), Value::null(), Value::null(), Value::boolean(true),
-                                                       Value::null(), Value::text("UTC"), Value::timestamp(i), Value::timestamp(i)}).ok() ||
+                                                       Value::null(), Value::text("UTC"), Value::timestamp(i), Value::timestamp(i), Value::null(), Value::null()}).ok() ||
           !w.value()->commit().ok()) {
         bad.fetch_add(1);
         return;

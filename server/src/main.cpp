@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -15,6 +16,7 @@
 #include "archivum/entropy.h"
 #include "archivum/engine/recovery.h"
 #include "archivum/engine/store.h"
+#include "archivum/punchline/rollback.h"
 #include "archivum/punchline/schema.h"
 #include "archivum/server/app.h"
 
@@ -37,6 +39,8 @@ int usage() {
                "  archivum pitr --backup <file> --archive <dir> --to <path>\n"
                "                [--live-log <file>] [--change-counter N | --time-us T]\n"
                "                                                   point-in-time recovery\n"
+               "  archivum rollback-export --db <path> --period <id> --to <file> [--released-only]\n"
+               "                                                   a period's shifts as the old server's ingest batches\n"
                "  archivum version\n");
   return 2;
 }
@@ -50,7 +54,7 @@ bool parse(int argc, char** argv, int from, const std::vector<std::string>& allo
     bool known = false;
     for (const auto& a : allowed) known = known || a == key;
     if (!known) return false;
-    if (key == "--discard-log") {
+    if (key == "--discard-log" || key == "--released-only") {
       out[key] = "1";
       continue;
     }
@@ -147,6 +151,38 @@ int cmd_pitr(const std::map<std::string, std::string>& a) {
   return rep.value().target_reached ? 0 : 3;
 }
 
+// The rollback export (docs/punchline-module.md, "Rollback"): a period's
+// shifts as the batches the old server ingests, replayed there by
+// tests/contract/test_rollback.py or by the operator.
+int cmd_rollback_export(const std::map<std::string, std::string>& a) {
+  auto vfs = archivum::make_os_vfs();
+  archivum::engine::DbOptions o;
+  o.create_if_missing = false;
+  auto st = archivum::engine::Store::open(*vfs, a.at("--db"), o);
+  if (!st.ok()) return fail("open", st.status());
+  auto rd = st.value()->begin_read();
+  if (!rd.ok()) return fail("read", rd.status());
+  const long long period = std::strtoll(a.at("--period").c_str(), nullptr, 10);
+  auto ex = archivum::punchline::rollback_export(*rd.value(), period, a.count("--released-only") != 0, st.value()->db().now_us());
+  if (!ex.ok()) return fail("rollback-export", ex.status());
+  const std::string text = ex.value().batches.dump(2);
+  archivum::OpenFlags flags;
+  flags.write = true;
+  flags.create = true;
+  flags.truncate = true;
+  auto out = vfs->open(a.at("--to"), flags);
+  if (!out.ok()) return fail("rollback-export", out.status());
+  if (archivum::Status s = out.value()->write(0, std::as_bytes(std::span<const char>(text.data(), text.size()))); !s.ok()) {
+    return fail("rollback-export", s);
+  }
+  if (archivum::Status s = out.value()->sync(); !s.ok()) return fail("rollback-export", s);
+  if (archivum::Status s = out.value()->close(); !s.ok()) return fail("rollback-export", s);
+  std::printf("rollback-export %s: %d shifts in %zu batches; %d open shifts skipped; %d without company or cost centre\n",
+              a.at("--to").c_str(), ex.value().shifts, ex.value().batches.size(), ex.value().open_shifts_skipped,
+              ex.value().employees_without_routing);
+  return 0;
+}
+
 // Local accounts are created only here, on the host (instructions v2, Q9).
 int cmd_account(const std::string& verb, const std::map<std::string, std::string>& a) {
   auto vfs = archivum::make_os_vfs();
@@ -237,6 +273,10 @@ int main(int argc, char** argv) {
   if (archivum::Status s = archivum::init_entropy(); !s.ok()) return fail("startup", s);
   const std::string command = argv[1];
   std::map<std::string, std::string> a;
+  if (command == "rollback-export") {
+    if (!parse(argc, argv, 2, {"--db", "--period", "--to", "--released-only"}, a) || !has_all(a, {"--db", "--period", "--to"})) return usage();
+    return cmd_rollback_export(a);
+  }
   if (command == "version") {
     std::printf("archivum 0.0.1 (stage 5)\n");
     return 0;

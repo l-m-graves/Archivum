@@ -50,7 +50,7 @@ Result<std::vector<T>> all(Result<std::vector<Row>> rows) {
 Row Employee::to_row() const {
   return {Value::integer(id), Value::text(employee_number), Value::text(display_name), opt_text(email), opt_text(tid),
           opt_text(oid), Value::boolean(active), opt_text(pay_group), Value::text(site_zone), Value::timestamp(created_at),
-          Value::timestamp(updated_at)};
+          Value::timestamp(updated_at), opt_text(company), opt_text(cost_center)};
 }
 Employee Employee::from_row(const Row& r) {
   Employee e;
@@ -65,6 +65,8 @@ Employee Employee::from_row(const Row& r) {
   e.site_zone = r[8].as_text();
   e.created_at = r[9].as_int64();
   e.updated_at = r[10].as_int64();
+  e.company = text_or_empty(r[11]);
+  e.cost_center = text_or_empty(r[12]);
   return e;
 }
 

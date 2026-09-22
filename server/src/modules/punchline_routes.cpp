@@ -63,6 +63,8 @@ nlohmann::json employee_json(const punchline::Employee& e) {
   j["active"] = e.active;
   j["pay_group"] = e.pay_group;
   j["site_zone"] = e.site_zone;
+  j["company"] = e.company;
+  j["cost_center"] = e.cost_center;
   return j;
 }
 
@@ -296,7 +298,7 @@ void PunchlineModule::register_routes(App& app_ref) {
           for (const auto& r : rows.value()) list.push_back(employee_json(punchline::Employee::from_row(r)));
           co_return ok_response({{"employees", list}}, request_id);
         }
-        auto body = parse_body(req, {"employee_number", "display_name", "email", "tid", "oid", "site_zone", "pay_group"});
+        auto body = parse_body(req, {"employee_number", "display_name", "email", "tid", "oid", "site_zone", "pay_group", "company", "cost_center"});
         if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "employees.create");
         auto who = co_await self->authenticator().authenticate(req, request_id);
         if (!who.ok()) co_return auth_error(who, request_id, "employees.create");
@@ -309,7 +311,9 @@ void PunchlineModule::register_routes(App& app_ref) {
         auto tid = body_string(body.value(), "tid", false);
         auto oid = body_string(body.value(), "oid", false);
         auto pay_group = body_string(body.value(), "pay_group", false);
-        for (const auto* r : {&number, &name, &zone, &email, &tid, &oid, &pay_group}) {
+        auto company = body_string(body.value(), "company", false);
+        auto cost_center = body_string(body.value(), "cost_center", false);
+        for (const auto* r : {&number, &name, &zone, &email, &tid, &oid, &pay_group, &company, &cost_center}) {
           if (!r->ok()) co_return status_response(r->status(), request_id);
         }
         if (tid.value().empty() != oid.value().empty()) co_return error_response(400, "invalid", "tid and oid go together", request_id);
@@ -325,6 +329,8 @@ void PunchlineModule::register_routes(App& app_ref) {
         e.tid = tid.value();
         e.oid = oid.value();
         e.pay_group = pay_group.value();
+        e.company = company.value();
+        e.cost_center = cost_center.value();
         e.created_at = e.updated_at = self->now_us();
         core::Recorder rec(*w.value(), self->policy(), who.value().actor(), "employee.create", self->now_us());
         if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
