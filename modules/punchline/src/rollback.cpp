@@ -28,9 +28,9 @@ std::string iso_utc(std::int64_t us) {
   const std::int64_t d = doy - (153 * mp + 2) / 5 + 1;
   const std::int64_t m = mp + (mp < 10 ? 3 : -9);
   const std::int64_t y = yoe + era * 400 + (m <= 2 ? 1 : 0);
-  char buf[32];
-  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ", static_cast<int>(y), static_cast<int>(m), static_cast<int>(d),
-                static_cast<int>(rem / 3600), static_cast<int>((rem % 3600) / 60), static_cast<int>(rem % 60));
+  char buf[64];
+  std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02dZ", static_cast<int>(y % 10000), static_cast<int>(m),
+                static_cast<int>(d), static_cast<int>(rem / 3600), static_cast<int>((rem % 3600) / 60), static_cast<int>(rem % 60));
   return buf;
 }
 
