@@ -38,6 +38,18 @@ archivum_add_test(concurrency_test unit/concurrency_test.cpp)
 archivum_add_test(core_test unit/core_test.cpp)
 archivum_add_test(punchline_rules_test unit/punchline_rules_test.cpp)
 archivum_add_test(punchline_sync_test unit/punchline_sync_test.cpp)
+archivum_add_test(tzif_test unit/tzif_test.cpp)
+# The time zone tooling against a synthetic release (tests/tzdata/README.md):
+# the build-time check on zic output with zdump-pinned transitions, on
+# every platform; regeneration and diff where zic and zdump exist.
+add_executable(tzcheck_synthetic ${CMAKE_SOURCE_DIR}/tools/tzdata/tzcheck.cpp ${CMAKE_SOURCE_DIR}/modules/punchline/src/tzif.cpp
+  tzdata/generated/embedded_tzdata.cpp)
+target_include_directories(tzcheck_synthetic PRIVATE ${CMAKE_SOURCE_DIR}/modules/punchline/include)
+target_link_libraries(tzcheck_synthetic PRIVATE archivum_engine archivum_warnings)
+add_test(NAME tzcheck_synthetic_test COMMAND tzcheck_synthetic --pinned ${CMAKE_CURRENT_SOURCE_DIR}/tzdata/generated/pinned-transitions.txt)
+if(NOT WIN32)
+  add_test(NAME tzdata_generate_test COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tzdata/generate_test.sh ${CMAKE_SOURCE_DIR})
+endif()
 set_tests_properties(db_test store_test backup_test concurrency_test PROPERTIES LABELS concurrency)
 set_tests_properties(cli_test PROPERTIES
   ENVIRONMENT "ARCHIVUM_BIN=$<TARGET_FILE:archivum>;ARCHIVUM_TMP=${CMAKE_CURRENT_BINARY_DIR}/cli-tmp"

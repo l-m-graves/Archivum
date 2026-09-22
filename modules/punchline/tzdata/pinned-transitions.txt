@@ -1,0 +1,1 @@
+# GENERATED placeholder: no database embedded yet; tools/tzdata/generate.py replaces this file.

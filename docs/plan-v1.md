@@ -60,10 +60,11 @@ return to v1 at the cost above.
 | 4 | Integrity check, restore, online backup, log archive, point-in-time recovery, restore-and-verify in CI. (Parquet moves to v1.1) | 2 to 3 |
 | 5 | Server core: configuration, structured logs, health with certificate expiry, TLS policy, trusted proxies, OIDC with JWKS caching, device enrollment and revocation, local accounts, break-glass, roles on `oid` and `tid`, audit writer with per-field recordability and the change-feed hook, module framework, migrations, mandatory off-host archive check | 4 to 5 |
 | 6 | Punchline module, see section 2 | 8 to 12 |
+| 6-C | The Punchline client's sync layer, rewritten (Stage 6 rulings, item 3a): the per-device credential in place of the shared token; employee identity dropped from the payload (the server derives it; a client that asserts it is refused and counted); the append-only local journal already in the Punchline repository driving the batch shape, with `(journal id, sequence)` idempotency and acknowledgement-driven compaction; the three time values and the site zone from the heartbeat; device-attested marking left to the server; bounded retry with backoff and a retry cap that reports `retry_exhausted` and `journal_recovery` through the batch; the enrollment screen taking the one-time credential into the DPAPI store; the crash suite over the journal-plus-sync path; and the contract suite run from the real client against Archivum. Estimate: 3 to 5 weeks. The prototype's request builder is one function, but the rest is new: WinHTTP client against the new contract (1 to 2), journal integration and acknowledgement (0.5 to 1), enrollment and credential handling (0.5), retry policy and reports (0.5), tests including the crash suite and the end-to-end run (0.5 to 1). Lands before or after 8-P by your decision | 3 to 5 |
 | 8-P | Punchline web views: employee self-service with approver visibility and flag, supervisor queue, exception queue, payroll console, period audit report, segregation-of-duties report, admin enrollment and mapping, CSV export | 4 to 6 |
 | 11 | Windows service installer, Linux container, IT handbook, upgrade and rollback, monthly restore procedure | 2 to 3 |
 
-**v1 total: 35 to 53 weeks, of which 1 to 2 are done.**
+**v1 total: 38 to 58 weeks with Stage 6-C, of which Stages 0 to 6 are done.**
 
 ### v1 gates
 
@@ -77,7 +78,20 @@ v1 ships when all of these hold. They are the pilot gates from
   pilot data.
 - Contract suite identical between the FastAPI server and Archivum, with
   idempotent replay verified, and every endpoint rejecting an employee ID
-  in the request body.
+  in the request body. Since Stage 6-C is a stage: the suite also run
+  from the rewritten client itself against Archivum.
+- Day assignment computed by the server from the instant and the site
+  zone against the embedded IANA database, never from the device's clock;
+  the device's wall clock compared and a disagreement queued; DST
+  transitions of every deployed site zone pinned and asserted at build
+  time (Stage 6 rulings, item 1).
+- Rollback rehearsed with the reverse export: `archivum rollback-export`
+  run against real pilot data, replayed into the old server through its
+  own ingest endpoint, and the old server serving the restored data
+  (`tests/contract/test_rollback.py` against the real export), before
+  cutover. Parallel running is phased by device (pilot devices on the new
+  client against Archivum, everyone else on the old client against
+  FastAPI), never dual-written.
 - No shared token anywhere; every pilot device enrolled individually with
   revocation tested end to end.
 - Audit trail verified for every mutating endpoint and every lifecycle

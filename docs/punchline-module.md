@@ -65,16 +65,46 @@ actor the device). Rules:
 
 ## Local time
 
-The server has no tz database (GCC 12's libstdc++ lacks `<chrono>` zones)
-and does not need one here: every punch carries the wall clock the device
-recorded, and pay periods, schedules and the checks are defined on local
-days and local minutes (punchline-updates.md section 8). The instant and
-the zone are stored beside it for a later recomputation under a recorded
-tzdb version. `localtime.h` does the calendar arithmetic (proleptic
-Gregorian, Sunday-based weekdays) and is tested against known dates.
-**Assumption**: the device's local wall clock is trusted for day
-assignment; a check that `device_time` and `local_time` agree under
-`site_zone` needs tzdb and is v1.1 work.
+**Ruling (Stage 6, item 1): day assignment must not trust the device's
+clock.** Day assignment decides daily and weekly overtime, pay period
+membership and which side of a cutoff a punch falls on; a device with a
+wrong or changed time zone would move hours between days silently. The
+design, approved as option B:
+
+- the IANA time zone database is vendored as the release tarball
+  (`third_party/tzdata/`), compiled with `zic` and embedded in the binary
+  as byte arrays (`tools/tzdata/generate.py` →
+  `modules/punchline/tzdata/embedded_tzdata.cpp`); the reader is ours
+  (`archivum/punchline/tzif.h`: TZif versions 1 to 4 with the footer
+  POSIX rule, the gap and the fold);
+- the server computes local time from `device_time` and the employee's
+  `site_zone`, and that result drives day assignment, pairing, schedules
+  and every check;
+- the device's recorded `local_time` is kept and compared with the
+  server's; a difference beyond `local_clock_tolerance_seconds` opens
+  `local_clock_mismatch` naming the device;
+- `tzdb_version` on every entry and period is the embedded release, not
+  anything the client says;
+- the build asserts the embedded database against zdump: `tzcheck` runs
+  after every build and fails it if the embedded bytes disagree with any
+  transition pinned at generation time for the zones in
+  `tools/tzdata/pinned-zones.txt`, which must list every deployed site
+  zone (the section 11 answer extends it); on Linux the regeneration is
+  also diffed byte for byte.
+
+**Status**: the reader, the generator, the build-time check and their
+tests are in (`tzif_test` on synthetic fixtures including both 2026
+Pacific transitions and the ambiguous hour; `tzcheck_synthetic` and
+`tzdata_generate_test` on a synthetic two-zone release compiled by zic
+and pinned by zdump, `tests/tzdata/`). The IANA release itself has not
+arrived (the attachment did not reach the repository), so the binary
+still carries the placeholder, `tzcheck` reports it, and the sync path
+has **not** been switched: it still takes the device's wall clock for day
+assignment. Switching it is the commit that lands with the release
+tarball; no payroll export may run on real data before that. The
+`localtime.h` calendar arithmetic (proleptic Gregorian, Sunday-based
+weekdays) stays as the day and minute helpers under the zone
+computation.
 
 ## Pairing (PL-6)
 
@@ -266,6 +296,26 @@ rejects it with a reason, Archivum accepts it and opens `long_shift` for
 the supervisor), a malformed uuid is rejected by name, an
 unauthenticated batch is 401, and `employee_id` in the body is the one
 deliberate difference, recorded as such.
+
+## Rollback
+
+`archivum rollback-export --db <path> --period <id> --to <file>
+[--released-only]` writes a period's closed shifts as the batches the old
+FastAPI server ingests on `POST /api/v1/timesheets`, so that rolling a
+pilot device back means replaying the file into the old server through
+its own uuid-idempotent ingest path. One closed shift is one old-store
+entry: `uuid` is the in punch's entry uuid, `employee_id` the employee
+number, name, company and cost centre from the employee record
+(`employees.company`, `employees.cost_center`, server-owned), clock in
+and out from the punches, minutes computed, the note from the in punch,
+and `archivum_state` for the operator (a key the old server ignores).
+Open shifts are skipped and counted; missing routing is exported empty
+and counted, never refused. Batched per device, 100 entries per batch
+like the old client. Proven three ways: the module test, the CLI round
+trip, and `tests/contract/test_rollback.py`, which replays an export into
+the FastAPI backend and asserts the old server serves every entry back
+with the same values and that a second replay stores nothing twice. The
+gate is that replay run against the real pilot export.
 
 ## Not in Stage 6
 

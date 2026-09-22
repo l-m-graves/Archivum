@@ -1,0 +1,11 @@
+# Zones whose transitions are pinned from zdump at generation time and
+# asserted at build time (tools/tzdata/generate.py, tools/tzdata/tzcheck).
+# One per line: zone<space>fromyear-toyear. Every site zone that will be
+# deployed must be here (Stage 6 rulings, item 1); the section 11 answer
+# "site time zones" extends this list. Until it arrives: the fixture's
+# zone, UTC, and one zone in each hemisphere with DST.
+America/Los_Angeles 2020-2031
+America/New_York 2020-2031
+UTC 2020-2031
+Europe/London 2020-2031
+Australia/Sydney 2020-2031

@@ -136,7 +136,8 @@ plan-v1 stand: 4 to 6 weeks and 2 to 3 weeks.
 | No shared token; every device enrolled individually with revocation tested end to end | Stage 5, tested |
 | Audit trail verified for every mutating endpoint and every lifecycle transition; the period audit report producible | this stage: every mutating route writes through the Recorder, every transition an approvals row, the report is `GET /api/v1/payroll/periods/{id}/audit` |
 | Segregation-of-duties report shows nobody holding both payroll and supervisor | `GET /api/v1/admin/roles/conflicts` |
-| **Day assignment from the instant and the site zone, never from the device's clock** (Stage 6 rulings, item 1): the tz database embedded in the binary, the server computing local time from `device_time` and `site_zone`, the device's wall clock kept and compared with an exception on disagreement, `tzdb_version` naming the embedded database, DST transition tests including the ambiguous hour | not started; approach proposed in section 8 and awaiting the ruling. No payroll export may run on real data before it |
+| **Day assignment from the instant and the site zone, never from the device's clock** (Stage 6 rulings, item 1): the tz database embedded in the binary, the server computing local time from `device_time` and `site_zone`, the device's wall clock kept and compared with an exception on disagreement, `tzdb_version` naming the embedded database, DST transition tests including the ambiguous hour | option B approved and built up to the data: reader, generator, build-time zdump assertion and tests are in (section 9); the IANA release has not arrived, so the sync path is not yet switched. No payroll export may run on real data before it |
+| **Rollback rehearsed with the reverse export** (item 3c): `archivum rollback-export` run against real pilot data, replayed into the old server, the old server serving it | the export, its tests and the replay into the FastAPI backend are in (section 9); the run against real pilot data is the pilot's |
 | Certificate expiry in health; off-host archive configured or health fails; break-glass exercised | Stages 1 and 5 |
 | Rollback rehearsed; integrity check scheduled; IT handbook complete | Stage 11 |
 
@@ -306,3 +307,80 @@ three is a defect.
 
 The day-assignment work is in the gates table above. Q8 and section 11
 answers blocking at the pilot, noted.
+
+## 9. Second rulings on this report (2026-09-22), applied
+
+### The IANA release did not arrive
+
+The message said the tarball and its detached signature were attached.
+Nothing reached this environment: the upload directory holds only the
+earlier documents, the attachment mount is empty, and the branch carries
+no such file. Per the ruling I have not substituted a distribution's
+copy. Everything that does not depend on the data is built and tested;
+the two steps that do are listed at the end of this section. When the
+tarball is committed to `third_party/tzdata/` (the README there says
+exactly what and where), the remaining work is one commit.
+
+### Item 1, option B: built up to the data
+
+| Piece | Where | Proof |
+|---|---|---|
+| TZif reader: versions 1 to 4, the 64-bit block, the footer POSIX rule (Mm.w.d, Jn, n; quoted names; negative and over-24-hour times), `local_of`, `instants_of` (none in the gap, two in the fold), `transitions` | `modules/punchline/{include/archivum/punchline/tzif.h,src/tzif.cpp}` | `tzif_test`: five tests on fixtures built in the test, including the 2026 Pacific transitions at 2026-03-08 10:00:00 UT and 2026-11-01 09:00:00 UT (definitional under the rule and equal to what zdump printed for the host's data), the 02:30 gap resolving to no instant, the 01:30 fold resolving to two instants an hour apart with the instant deciding, a southern-hemisphere rule spanning the new year, Jn skipping Feb 29, and corrupt input refused |
+| Generator: SHA-256 gate, `version` and `tzdata.zi` required, `zic -b slim`, every zone embedded as a byte array, zdump-pinned transitions for the pinned zones, deterministic | `tools/tzdata/generate.py`, `tools/tzdata/pinned-zones.txt` | `tzdata_generate_test` (Linux): regenerates a synthetic two-zone release checked in under `tests/tzdata/` and diffs byte for byte; the wrong SHA-256 is refused |
+| Build-time assertion: `tzcheck` runs after every build on every platform and fails it if the embedded bytes disagree with any pinned zdump transition; reports the placeholder loudly | `tools/tzdata/tzcheck.cpp`, `modules/punchline/CMakeLists.txt` | `tzcheck_synthetic_test`: the tool against zic's output for the synthetic release with 22 zdump-pinned transitions, on Linux and Windows |
+| Pinned zones | `tools/tzdata/pinned-zones.txt` | `America/Los_Angeles`, `America/New_York`, `UTC`, `Europe/London`, `Australia/Sydney` over 2020 to 2031 until the section 11 "site time zones" answer replaces the list with every deployed zone |
+
+Not switched yet, because it needs the database to test: the sync path
+still takes the device's wall clock for day assignment. The switch is:
+`apply_batch` and `record_manual_entry` compute local time from
+`device_time` and the employee's `site_zone` through `tz::zone`, compare
+it with the device's `local_time`, open `local_clock_mismatch` beyond
+`local_clock_tolerance_seconds`, and stamp `tzdb_version` from
+`tz::database_version()`; the schedule and pairing checks take the
+server's local time; `ARCHIVUM_TZDATA_ALLOW_EMPTY` goes OFF so a build
+without the database fails. Tests at both transitions of every pinned
+site zone including the fold, through sync. One commit, with the data.
+
+### Item 2: rewritten
+
+`docs/durability.md` now says what is documented: `MOVEFILE_WRITE_THROUGH`
+flushes a cross-volume (copy-and-delete) move before returning; a
+same-volume rename is atomic with no documented durability guarantee,
+and NTFS metadata journaling is stated as the reason it survives in
+practice, not as a promise. The durability argument for the archive is
+the idempotent, verifying re-ship: a rename lost to a crash leaves the
+segment absent and the next pass copies and verifies it again, on any
+file system including SMB. The unverified marker is gone; the code
+comments and `docs/server-core.md` say the same.
+
+### Item 3
+
+- **3a**: Stage 6-C is in `docs/plan-v1.md` with its scope and an
+  estimate of 3 to 5 weeks, broken down; the v1 total is 38 to 58 weeks.
+- **3b, confirmed and tested**: `employees` now carries `company` and
+  `cost_center` (server-owned, admin-set); the sync endpoint refuses
+  `employee_name`, `company`, `cost_center` and `minutes` per entry by
+  name, the rest of the batch standing, and the refusal is queued as
+  `entry_rejected`. Minutes are computed from the punches at pairing;
+  nothing a client sends reaches a pay figure.
+- **3c, built**: `archivum rollback-export --db --period --to
+  [--released-only]` writes the old server's ingest batches (section
+  "Rollback" of `docs/punchline-module.md`). Proven by the module test,
+  the CLI round trip, and `tests/contract/test_rollback.py`, which
+  replays the CLI's own output (checked in as the fixture) into the
+  FastAPI backend and asserts every entry is served back with the same
+  values and that a second replay stores nothing twice: 9 of 9 in the
+  contract directory against the checked-out Punchline repository. Added
+  to the v1 gates with the phased-by-device parallel run and no
+  dual-write.
+
+### What remains for item 1, in order
+
+1. The IANA release tarball and `.asc` in `third_party/tzdata/`, with the
+   release name, SHA-256 and the signature verification result recorded
+   in `docs/toolchain.md` (I will record what `gpg --verify` prints once
+   the files and IANA's public key are here; the key is not in this
+   environment either).
+2. `generate.py` run, `ARCHIVUM_TZDATA_ALLOW_EMPTY` OFF, the sync path
+   switched, the site-zone transition tests through sync, and the gate
+   line in section 6 updated. Then Stage 8-P.

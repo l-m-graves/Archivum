@@ -43,14 +43,19 @@ engine/            storage engine library (archivum_engine)
   src/               crc32c.cpp journal.cpp entropy.cpp vfs_posix.cpp vfs_win32.cpp
                      engine/{db,wal,page_format,btree,types,record,store,recovery,migrate}.cpp
   testing/           test-only doubles: MemVfs, FaultVfs (the crash shim)
-modules/punchline/   the Punchline module: schema, rules, data, local time, sync and pairing, lifecycle, exceptions
+modules/punchline/   the Punchline module: schema, rules, data, local time, the TZif reader and embedded
+                     time zone database (tzdata/), sync and pairing, lifecycle, exceptions, rollback export
+tools/tzdata/        the database generator (IANA tarball -> zic -> embedded arrays) and the build-time check
+third_party/tzdata/  where the IANA release tarball and signature go (not yet vendored)
 tests/
   support/           minimal test framework (no dependency)
   unit/              per-component tests
   crash/             crash-injection tests (the Stage 0 gate)
   cli/               the binary's operational subcommands on real files
   server/            test PKI, test issuer, integration, saturation, core, Punchline and contract tests
-  contract/          the batch-ingest contract shared with the FastAPI prototype (scenarios + pytest runner)
+  contract/          the batch-ingest contract shared with the FastAPI prototype (scenarios + pytest runner),
+                     and the rollback replay into it
+  tzdata/            a synthetic release proving the time zone tooling on every build
 config/            archivum.example.json
 docs/                design, formats, durability model, testing model
 .github/workflows/   CI: Windows (MSVC 2022) and Linux (Ubuntu 22.04, GCC 12: ASan+UBSan, Release, ThreadSanitizer)

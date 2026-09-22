@@ -1,0 +1,24 @@
+# GENERATED from 2000a by zdump; the build asserts the embedded database reproduces every line.
+# zone	instant	utoff_after	isdst_after	abbrev_after
+Test/Pacific	1583661600	-25200	1	PDT
+Test/Pacific	1604221200	-28800	0	PST
+Test/Pacific	1615716000	-25200	1	PDT
+Test/Pacific	1636275600	-28800	0	PST
+Test/Pacific	1647165600	-25200	1	PDT
+Test/Pacific	1667725200	-28800	0	PST
+Test/Pacific	1678615200	-25200	1	PDT
+Test/Pacific	1699174800	-28800	0	PST
+Test/Pacific	1710064800	-25200	1	PDT
+Test/Pacific	1730624400	-28800	0	PST
+Test/Pacific	1741514400	-25200	1	PDT
+Test/Pacific	1762074000	-28800	0	PST
+Test/Pacific	1772964000	-25200	1	PDT
+Test/Pacific	1793523600	-28800	0	PST
+Test/Pacific	1805018400	-25200	1	PDT
+Test/Pacific	1825578000	-28800	0	PST
+Test/Pacific	1836468000	-25200	1	PDT
+Test/Pacific	1857027600	-28800	0	PST
+Test/Pacific	1867917600	-25200	1	PDT
+Test/Pacific	1888477200	-28800	0	PST
+Test/Pacific	1899367200	-25200	1	PDT
+Test/Pacific	1919926800	-28800	0	PST
