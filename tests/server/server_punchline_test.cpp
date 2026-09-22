@@ -223,8 +223,12 @@ ARCHIVUM_TEST(b_sync_is_idempotent_with_per_entry_outcomes) {
   for (int i = 0; i < 501; ++i) huge["entries"].push_back(punch(100 + i, 100 + i, "in", 0, 1));
   CHECK(f.post("/api/v1/device/sync", huge.dump(), device).status == 413);
   // The note is free text: never by value in the feed or the audit log.
+  // Every key the contract names, in one batch (docs/punchline-module.md, "Sync").
   nlohmann::json b4 = batch(4, {punch(13, 13, "in", 4, 9)});
+  b4["client_time_us"] = f.app->now_us();
   b4["entries"][0]["note"] = "CANARY-NOTE-7f3a";
+  b4["entries"][0]["pay_code"] = "regular";
+  b4["reports"] = nlohmann::json::array({nlohmann::json{{"kind", "journal_recovery"}, {"detail", "12 bytes discarded"}}});
   auto noted = f.post("/api/v1/device/sync", b4.dump(), device);
   REQUIRE_MSG(noted.status == 200, noted.body);
   auto rd = f.app->store().begin_read();
@@ -329,11 +333,17 @@ ARCHIVUM_TEST(e_lifecycle_over_http_reaches_payroll_only_by_release) {
   auto late = f.post("/api/v1/device/sync", batch(5, {punch(20, 20, "out", 4, 18)}).dump(), device);
   REQUIRE_MSG(late.status == 200, late.body);
   CHECK(parse(late.body)["accepted"].size() == 1);
+  // The supervisor sees it in their queue as a late punch, not merely as unpaired.
+  auto late_items = f.get("/api/v1/exceptions?kind=late_punch", boss());
+  REQUIRE_MSG(late_items.status == 200, late_items.body);
+  CHECK(parse(late_items.body)["count"] == 1);
+  CHECK(parse(late_items.body)["exceptions"][0]["period_id"] == g_period);
   CHECK(f.post(p + "/release", nlohmann::json{{"employee_number", "E0001"}}.dump(), payroll()).status == 409);  // the late entry blocks
   CHECK(f.post(p + "/submit", nlohmann::json{{"employee_number", "E0001"}}.dump(), payroll()).status == 200);
   auto override = f.post(p + "/approve", nlohmann::json{{"employee_number", "E0001"}, {"override_reason", "supervisor out; cutoff"}}.dump(),
                          payroll());
   REQUIRE_MSG(override.status == 200, override.body);
+  CHECK(open_exceptions("late_punch") == 0);  // closed by the re-approval
   auto released = f.post(p + "/release", nlohmann::json{{"employee_number", "E0001"}}.dump(), payroll());
   REQUIRE_MSG(released.status == 200, released.body);
   CHECK(f.post(p + "/release", nlohmann::json{{"employee_number", "E0001"}}.dump(), boss()).status == 409);

@@ -4,6 +4,26 @@ Normative for `engine/include/archivum/engine/page_format.h`. All integers
 are little-endian. Format version 3 (2 added `commit_time_us`; 3 changed the
 catalog row layout, `docs/store-format.md`; nothing was deployed under 1 or 2).
 
+## The format is frozen from the first pilot deployment
+
+Versions 1 to 3 changed the layout in place because no file existed
+outside the test suites. From the first pilot deployment that stops being
+true, and the rule from then on (Stage 6 rulings, item 5) is:
+
+- a change to the database file, the log, an archived segment, a backup,
+  or the catalog row layout bumps `format_version` and ships with an
+  **upgrade path** (`archivum migrate --db` or the open path converts the
+  previous version in place or into a new file, never silently);
+- with a **downgrade or rollback story**: either the previous binary can
+  still open the file, or the upgrade keeps the previous-format file
+  beside the new one until the operator removes it, and `docs/backup-recovery.md`
+  says which;
+- and with a **test that opens a file written by the previous format**: a
+  fixture file produced by the previous version is checked in and the
+  suite opens, checks and reads it under the new version.
+
+A format change without all three is a defect, whatever else it fixes.
+
 ## Database file
 
 A sequence of fixed-size pages. The page size is a power of two in

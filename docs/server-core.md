@@ -92,15 +92,17 @@ only).
 own thread every `archive_cadence_seconds`: it copies every archived log
 segment the destination lacks (to a `.part` name, then renamed), and a
 full backup when the last one is older than `backup_cadence_seconds`.
-Every copy is verified before it counts (Stage 6 ruling): a segment's
-copy is read back from the destination and its size and CRC32C compared
-with the source; a backup is checked page by page against its own
-checksums. A mismatch removes the temporary file, fails the pass, is an
-alert, and is counted in `/healthz` as `archive.verification_failures`.
-Durability of the name: the file is synced, renamed into place, and the
-destination directory synced (`fsync` on POSIX; a no-op on NTFS, which
-journals metadata, with the rename done `MOVEFILE_WRITE_THROUGH`); the
-checkpoint's own archive write does the same on the local side.
+Every copy is verified before it counts (Stage 6 ruling), and after its
+final rename: a segment's copy is read back from the destination under
+its final name and its size and CRC32C compared with the source; a backup
+is checked page by page against its own checksums. A mismatch removes the
+file, fails the pass, is an alert, and is counted in `/healthz` as
+`archive.verification_failures`. Durability of the name: the file is
+synced and renamed into place with `MoveFileExW(MOVEFILE_WRITE_THROUGH)`
+on Windows, or `rename` plus a directory `fsync` on POSIX; the
+checkpoint's own archive write does the same on the local side. What a
+rename on an SMB share does and does not guarantee is in
+`docs/durability.md`.
 `/healthz` returns 503 with `archive.problem` until the first successful
 pass and whenever the last success is older than twice the cadence; a
 failing pass is an alert. Tested end to end in

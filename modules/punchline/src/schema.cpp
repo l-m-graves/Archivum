@@ -353,8 +353,10 @@ TableDef approvals() {
 // The exception queue: schedule checks, long shifts, unpaired punches,
 // clock divergence, device-attested counts, exhausted retries and journal
 // recoveries reported by the client, stale devices, a device asserting an
-// employee id (tamper signal), entries past a cutoff (escalation), and the
-// employee's flag to their approver (which opens a ticket row here).
+// employee id (tamper signal), entries past a cutoff (escalation), a punch
+// arriving after its period was submitted or approved, an entry a device
+// keeps sending that the server keeps refusing, and the employee's flag to
+// their approver (which opens a ticket row here).
 TableDef exceptions() {
   TableDef t;
   t.name = "exceptions";
@@ -382,7 +384,7 @@ TableDef exceptions() {
   t.checks = {one_of("exceptions_kind_known", "kind",
                      {"outside_schedule", "non_scheduled_day", "no_schedule", "long_shift", "clock_divergence",
                       "device_attested_count", "retry_exhausted", "device_stale", "approver_flag", "unpaired_punch",
-                      "employee_id_asserted", "past_cutoff", "journal_recovery"}),
+                      "employee_id_asserted", "past_cutoff", "journal_recovery", "late_punch", "entry_rejected"}),
               one_of("exceptions_state_known", "state", {"open", "resolved", "dismissed"})};
   return t;
 }

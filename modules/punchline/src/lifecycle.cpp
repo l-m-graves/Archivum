@@ -106,6 +106,14 @@ Result<TransitionResult> transition(core::Recorder& rec, const TransitionRequest
     n = resolve_matching(rec, key, "approval", req.now_us);
     if (!n.ok()) return n.status();
     res.exceptions_resolved += n.value();
+    // Late punches of this employee in this period were just reviewed too.
+    auto late = open_exceptions(w, {req.employee_id}, "late_punch");
+    if (!late.ok()) return late.status();
+    for (const Exception& x : late.value()) {
+      if (x.period_id != req.period_id) continue;
+      if (Status s = close_exception(rec, x.id, "resolved", "approval", req.now_us); !s.ok()) return s;
+      ++res.exceptions_resolved;
+    }
   }
   return res;
 }

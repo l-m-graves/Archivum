@@ -199,8 +199,10 @@ class Win32Vfs final : public Vfs {
   }
 
   Status sync_directory(const std::string& dir) override {
-    // NTFS journals directory metadata and MoveFileExW is called with
-    // MOVEFILE_WRITE_THROUGH; there is no directory fsync on Win32.
+    // There is no directory fsync on Win32. Rename durability comes from
+    // MoveFileExW's MOVEFILE_WRITE_THROUGH above, which does not return
+    // until the move is flushed (docs/durability.md); this call therefore
+    // has nothing left to do and returns ok rather than pretending.
     (void)dir;
     return Status();
   }

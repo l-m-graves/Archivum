@@ -332,6 +332,20 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
   std::int64_t earliest_new = 0;
   std::set<std::int64_t> periods_touched;
   std::int64_t first_seq = -1, last_seq = -1;
+  std::string rejected_detail;  // "<uuid>: reason" lines, for the queue
+  // Periods where this employee already has entries past `recorded`: a punch
+  // landing there is late and the supervisor must see it.
+  std::map<std::int64_t, bool> period_settled;
+  auto settled = [&](std::int64_t period_id) -> Result<bool> {
+    auto it = period_settled.find(period_id);
+    if (it != period_settled.end()) return it->second;
+    auto in_period = entries_in_period(w, period_id, device.employee_id);
+    if (!in_period.ok()) return in_period.status();
+    bool any = false;
+    for (const TimeEntry& e : in_period.value()) any = any || (e.superseded_by == 0 && e.state != "recorded");
+    period_settled[period_id] = any;
+    return any;
+  };
   for (const IncomingEntry& in : entries) {
     EntryOutcome oc;
     oc.entry_uuid = in.entry_uuid;
@@ -341,6 +355,7 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
       oc.reason = why;
       ++out.rejected;
       out.outcomes.push_back(oc);
+      rejected_detail += engine::Value::uuid(in.entry_uuid).to_string() + ": " + why + "\n";
     };
     auto accept = [&]() {
       oc.accepted = true;
@@ -420,9 +435,28 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
     e.created_at = now_us;
     e.note = in.note;
     if (Status s = rules::entry_period_valid(w, lt.local_day, e.period_id); !s.ok()) return s;
+    bool late = false;
+    if (e.period_id != 0) {
+      auto st = settled(e.period_id);
+      if (!st.ok()) return st.status();
+      late = st.value();
+    }
     if (Status s = rec.insert("time_entries", e.to_row()); !s.ok()) return s;
     in_batch.insert(in.entry_uuid);
     accept();
+    if (late) {
+      // Accepted, recorded, and visible: a punch after submission or
+      // approval is exactly what the supervisor needs to see. It also
+      // blocks release until resubmitted and approved (PL-7).
+      ExceptionKey key;
+      key.kind = "late_punch";
+      key.employee_id = e.employee_id;
+      key.entry_id = e.id;
+      key.period_id = e.period_id;
+      auto o = open_exception(rec, key, "punch received after the period's entries were submitted or approved", now_us);
+      if (!o.ok()) return o.status();
+      note_opened(&out.exceptions_opened, o.value());
+    }
     if (earliest_new == 0 || e.device_time < earliest_new) earliest_new = e.device_time;
     if (e.period_id != 0) periods_touched.insert(e.period_id);
     if (period.value() && period.value()->state == "locked") {
@@ -441,6 +475,29 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
   }
   for (std::int64_t period : periods_touched) {
     if (Status s = count_device_attested(rec, cfg, device.employee_id, period, now_us, &out.exceptions_opened); !s.ok()) return s;
+  }
+  // Refused entries are per entry (the rest of the batch stands) and are
+  // surfaced: the client will resend them, and a permanent refusal must
+  // not be a device silently losing time. One open item per device holds
+  // the current list; it is replaced, not duplicated, on every batch that
+  // refuses something.
+  if (!rejected_detail.empty()) {
+    ExceptionKey key;
+    key.kind = "entry_rejected";
+    key.device_id = device.id;
+    key.employee_id = device.employee_id;
+    auto existing = open_exceptions(w, {device.employee_id}, "entry_rejected");
+    if (!existing.ok()) return existing.status();
+    bool same = false;
+    for (const Exception& x : existing.value()) {
+      if (x.device_id == device.id && x.detail == rejected_detail.substr(0, 2048)) same = true;
+    }
+    if (!same) {
+      if (auto r = resolve_matching(rec, key, "sync", now_us); !r.ok()) return r.status();
+      auto o = open_exception(rec, key, rejected_detail.substr(0, 2048), now_us);
+      if (!o.ok()) return o.status();
+      note_opened(&out.exceptions_opened, o.value());
+    }
   }
   for (const IncomingReport& r : batch.reports) {
     if (r.kind != "retry_exhausted" && r.kind != "journal_recovery") {

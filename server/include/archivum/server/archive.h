@@ -5,12 +5,13 @@
 // successful copy and fails loudly (503) until one has happened and
 // whenever the last one is older than twice the cadence.
 //
-// Every copy is verified before it counts (Stage 6 ruling): a segment's
-// copy is read back and its size and CRC32C compared with the source; a
-// backup is checked page by page. A mismatch removes the temporary file,
-// fails the pass, and is an alert. Each file is written under a `.part`
-// name, synced, renamed into place, and the destination directory synced
-// (a no-op on NTFS, which journals metadata; fsync on POSIX).
+// Every copy is verified before it counts (Stage 6 ruling), after its
+// final rename: a segment's copy is read back under its final name and
+// its size and CRC32C compared with the source; a backup is checked page
+// by page. A mismatch removes the file, fails the pass, and is an alert.
+// Each file is written under a `.part` name, synced, renamed into place
+// (MoveFileExW with MOVEFILE_WRITE_THROUGH on Windows; rename plus a
+// directory fsync on POSIX; docs/durability.md), then verified.
 #pragma once
 
 #include <atomic>

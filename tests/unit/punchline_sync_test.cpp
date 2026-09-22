@@ -263,13 +263,26 @@ ARCHIVUM_TEST(sync_rejects_per_entry_and_flags_the_exception_queue) {
   CHECK(kinds.count("clock_divergence") == 1);
   CHECK(kinds.count("retry_exhausted") == 1);
   CHECK(kinds.count("device_attested_count") == 1);  // 8 device-attested entries, threshold 6
-  // Another sync with the same divergence does not duplicate the open item.
+  // Refused entries are surfaced: one item per device with the current list.
+  CHECK(kinds.count("entry_rejected") == 1);
+  {
+    auto items = w.open_kinds("entry_rejected");
+    REQUIRE(items.size() == 1);
+    CHECK(items[0].device_id == 1 && items[0].detail.find("sequence 3") != std::string::npos);
+    CHECK(items[0].detail.find("kind must be") != std::string::npos);
+  }
+  // Another sync with the same divergence does not duplicate the open item;
+  // a resend of the same refused entry does not duplicate its item either.
   IncomingBatch b2;
   b2.batch_uuid = uid(102);
   b2.journal_id = uid(500);
   b2.client_time_us = b.client_time_us;
-  REQUIRE_OK(w.sync(b2).status());
+  b2.entries = {bad, reused_seq};
+  auto r2 = w.sync(b2);
+  REQUIRE_OK(r2.status());
+  CHECK(r2.value().rejected == 2 && r2.value().accepted == 0);
   CHECK(w.open_kinds("clock_divergence").size() == 1);
+  CHECK(w.open_kinds("entry_rejected").size() == 1);
 }
 
 ARCHIVUM_TEST(correction_supersedes_and_repairs_pairing) {
@@ -373,6 +386,8 @@ ARCHIVUM_TEST(lifecycle_transitions_are_ordered_audited_and_reach_payroll_only_b
   REQUIRE_OK(lr.status());
   CHECK(lr.value().accepted == 1);
   CHECK(w.open_kinds("unpaired_punch").size() == 1);
+  CHECK(w.open_kinds("late_punch").size() == 1);  // visible to the supervisor, not just unpaired
+  CHECK(w.open_kinds("late_punch")[0].period_id == 1 && w.open_kinds("late_punch")[0].employee_id == 1);
   CHECK(w.shifts().size() == 2);
   // Release needs everything approved: the late entry blocks until it is
   // submitted and approved (payroll, with an override, may do both).
@@ -381,6 +396,7 @@ ARCHIVUM_TEST(lifecycle_transitions_are_ordered_audited_and_reach_payroll_only_b
   rules::Standing override = payroll;
   override.override_reason = "late punch after the supervisor's approval";
   REQUIRE_OK(move("approved", override).status());
+  CHECK(w.open_kinds("late_punch").empty());  // the re-approval reviewed it
   auto released = move("released", payroll);
   REQUIRE_OK(released.status());
   CHECK(released.value().entries == 5);

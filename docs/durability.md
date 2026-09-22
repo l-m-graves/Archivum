@@ -81,3 +81,56 @@ made while it was still there. What the archive cannot do is recover a
 commit the disk dropped before the checkpoint that would have archived
 it, so the loss window is at most one checkpoint interval plus the copy
 cadence.
+
+## Renames and directories (Stage 6)
+
+Every file the engine or the server puts in place under its final name
+(an archived log segment, an off-host copy, a backup, a restored database)
+is written under a temporary name, synced, and renamed. What makes the
+rename itself durable differs by platform:
+
+- **POSIX**: `rename(2)` followed by `fsync` of the parent directory
+  (`Vfs::sync_directory`). Without the directory sync the rename is atomic
+  but not durable: a crash can bring back the old directory entry.
+- **Windows**: `MoveFileExW(from, to, MOVEFILE_REPLACE_EXISTING |
+  MOVEFILE_WRITE_THROUGH)`. There is no directory fsync on Win32; the
+  write-through flag is the mechanism, and `Vfs::sync_directory` has
+  nothing left to do there. Evidence: Microsoft's reference page for
+  `MoveFileExW` ("MoveFileExW function (winbase.h)",
+  `learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw`)
+  documents `MOVEFILE_WRITE_THROUGH` as "the function does not return until
+  the file is actually moved on the disk", with the note that when the
+  move is within a volume the flag "guarantees that the move is flushed
+  before the function returns". **Verification status**: that page could
+  not be fetched from this environment (the egress proxy returns no
+  response for `learn.microsoft.com`); the wording above is quoted from
+  memory of the page and must be checked against it by someone who can
+  read it before the handbook cites it. The flag's presence in the code
+  is not in doubt (`engine/src/vfs_win32.cpp`, `rename`).
+
+### The off-host destination on a network share
+
+The destination is likely an SMB share. What Archivum can and cannot
+promise there:
+
+- **What it does**: the copy is written to a `.part` name and closed with
+  `FlushFileBuffers`, renamed with `MOVEFILE_WRITE_THROUGH`, and then read
+  back under its final name and compared with the source (size and
+  CRC32C; a backup page by page). Only a copy that verifies after the
+  rename counts as shipped and satisfies the health check.
+- **What that proves**: the file server presented the complete, correct
+  bytes under the final name after the rename, to this client, at that
+  moment.
+- **What it cannot prove**: that the file server has committed those
+  bytes and that directory entry to stable storage. Whether a
+  write-through move or a flush over SMB reaches the server's disk before
+  the call returns depends on the server's implementation and its own
+  storage; the client has no way to observe it, and a read-back can be
+  served from the server's cache. Archivum makes no claim about the
+  server's durability and the handbook must not either.
+- **What to do about it**: put the share on a server whose file system
+  journals metadata and whose storage honours flushes, keep the shipped
+  copies out of the server's reach for deletion, and run the monthly
+  restore procedure (`docs/backup-recovery.md`) from the destination, not
+  from the host: that is the only end-to-end proof that the off-host copy
+  is what it claims to be.

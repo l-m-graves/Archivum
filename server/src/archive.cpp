@@ -44,17 +44,20 @@ Status ArchiveShipper::ship_once() {
   if (local.ok()) {
     for (const std::string& name : local.value()) {
       if (name.size() < 4 || name.substr(name.size() - 4) != ".wal" || have.count(name)) continue;
-      // Copy to a temporary name, verify the copy against the source
-      // (size and CRC32C, read back from the destination), then rename
-      // and sync the destination directory: a reader of the destination
-      // never sees a half-written segment, a truncated or corrupted copy
-      // is never counted as shipped, and the name is durable.
+      // Copy to a temporary name, rename it into place (write-through on
+      // Windows, directory fsync on POSIX), then verify the file under its
+      // final name against the source: size and CRC32C, read back from the
+      // destination after the rename, so that whatever the rename did on
+      // the destination's file system is what gets checked. A mismatch
+      // removes the final file (the next pass copies it again) and fails
+      // the pass; nothing is counted as shipped that did not verify.
       const std::string src = database_.archive_dir + "/" + name;
       const std::string tmp = backup_.destination + "/" + name + ".part";
+      const std::string final_name = backup_.destination + "/" + name;
       if (Status s = engine::copy_file(vfs_, src, tmp); !s.ok()) return finish(s, shipped, false);
-      if (Status s = verify_copy(src, tmp); !s.ok()) return finish(s, shipped, false);
-      if (Status s = vfs_.rename(tmp, backup_.destination + "/" + name); !s.ok()) return finish(s, shipped, false);
+      if (Status s = vfs_.rename(tmp, final_name); !s.ok()) return finish(s, shipped, false);
       if (Status s = vfs_.sync_directory(backup_.destination); !s.ok()) return finish(s, shipped, false);
+      if (Status s = verify_copy(src, final_name); !s.ok()) return finish(s, shipped, false);
       ++shipped;
     }
   }
@@ -65,21 +68,33 @@ Status ArchiveShipper::ship_once() {
     last_backup = status_.last_backup_us;
   }
   if (last_backup == 0 || now - last_backup >= static_cast<std::int64_t>(backup_.backup_cadence_seconds) * 1'000'000) {
-    const std::string tmp = backup_.destination + "/backup.part";
-    auto cc = store_.backup(vfs_, tmp);
-    if (!cc.ok()) return finish(cc.status(), shipped, false);
-    // The backup is written straight to the destination; verify it page by
-    // page (every page carries its checksum) before it gets its name.
-    if (Status s = engine::verify_backup_file(vfs_, tmp); !s.ok()) {
-      (void)vfs_.remove(tmp);
-      ++verification_failures_;
-      log(LogLevel::Alert, "archive.backup_verification_failed", {{"error", s.to_string()}, {"destination", backup_.destination}});
-      return finish(s, shipped, false);
+    // A backup is named by its change counter, so one that already exists
+    // at the destination is the same content: never rewritten (a rewrite
+    // would replace a verified copy with an unverified one).
+    const std::uint64_t cc_now = store_.db().stats().change_counter;
+    const std::string expected = backup_.destination + "/backup-" + std::to_string(cc_now) + ".db";
+    auto already = vfs_.exists(expected);
+    if (!already.ok()) return finish(already.status(), shipped, false);
+    if (already.value()) {
+      backup_done = true;
+    } else {
+      const std::string tmp = backup_.destination + "/backup.part";
+      auto cc = store_.backup(vfs_, tmp);
+      if (!cc.ok()) return finish(cc.status(), shipped, false);
+      // The backup is written straight to the destination, renamed into
+      // place, and then verified page by page under its final name (every
+      // page carries its checksum).
+      const std::string final_name = backup_.destination + "/backup-" + std::to_string(cc.value()) + ".db";
+      if (Status s = vfs_.rename(tmp, final_name); !s.ok()) return finish(s, shipped, false);
+      if (Status s = vfs_.sync_directory(backup_.destination); !s.ok()) return finish(s, shipped, false);
+      if (Status s = engine::verify_backup_file(vfs_, final_name); !s.ok()) {
+        (void)vfs_.remove(final_name);
+        ++verification_failures_;
+        log(LogLevel::Alert, "archive.backup_verification_failed", {{"error", s.to_string()}, {"destination", backup_.destination}});
+        return finish(s, shipped, false);
+      }
+      backup_done = true;
     }
-    const std::string final_name = backup_.destination + "/backup-" + std::to_string(cc.value()) + ".db";
-    if (Status s = vfs_.rename(tmp, final_name); !s.ok()) return finish(s, shipped, false);
-    if (Status s = vfs_.sync_directory(backup_.destination); !s.ok()) return finish(s, shipped, false);
-    backup_done = true;
   }
   if (shipped > 0 || backup_done) {
     log(LogLevel::Info, "archive.shipped", {{"segments", shipped}, {"backup", backup_done}, {"destination", backup_.destination}});

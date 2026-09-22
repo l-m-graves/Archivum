@@ -46,8 +46,12 @@ actor the device). Rules:
   (`docs/client-journal.md` in the Punchline repository): a sequence
   number already stored under another uuid is rejected by name, since a
   lying disk can reissue a number and the uuid is the truth.
-- **Per-entry outcomes.** A malformed entry is rejected with its uuid as
-  sent and a reason; the rest of the batch proceeds. Only shape that
+- **Per-entry outcomes.** A malformed entry, a reused sequence number, an
+  unknown pay code, or an entry from another device is rejected with its
+  uuid as sent and a reason; the rest of the batch proceeds and is
+  acknowledged. Refusal is never per batch: one bad entry cannot block
+  the punches behind it. A refused entry is the same refusal on every
+  resend, and the queue shows it (`entry_rejected`). Only shape that
   cannot be attributed to an entry (not an object, `entries` not an
   array) refuses the request, and a batch over `max_batch_entries` is 413
   before anything is looked at.
@@ -90,7 +94,10 @@ late-arriving punch or a correction lands, rebuilding shifts still in
 a shift is wholly rebuilt or wholly kept. Shifts approved or later are
 settled: a punch that lands in a settled span is folded on its own and
 ends up flagged, so a late sync never fails and never alters what a
-supervisor approved.
+supervisor approved. Any punch landing in a period where the employee's
+entries are already past `recorded` also opens `late_punch` for the
+supervisor, whether or not it pairs, and the item closes when that
+employee's period is approved again.
 
 Schedule checks run when a shift closes: no schedule rows in force for
 the employee is `no_schedule`; no row for the weekday is
@@ -161,6 +168,8 @@ action that produced them. Kinds:
 | `device_stale` | the monitor | the next sync or heartbeat |
 | `employee_id_asserted` | the tamper signal (below) | a person |
 | `past_cutoff` | the monitor after a cutoff; sync for a locked period | approval, or a person |
+| `late_punch` | sync, when a punch lands in a period where the employee's entries are already submitted or approved | approval of that employee's period, or a person |
+| `entry_rejected` | sync, when any entry of a batch is refused; one open item per device holding the current list, replaced when the list changes, so a client resending a refused entry never duplicates it | the next batch with nothing refused does not close it (the refused entries are still on the device); a person does, once the device is fixed |
 | `approver_flag` | `POST /api/v1/me/flag` | a person |
 
 `GET /api/v1/exceptions?kind=` lists open items in the caller's scope:

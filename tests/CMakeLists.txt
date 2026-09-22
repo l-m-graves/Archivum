@@ -62,5 +62,7 @@ archivum_add_server_test(server_integration_test server/server_integration_test.
 archivum_add_server_test(server_core_test server/server_core_test.cpp)
 archivum_add_server_test(server_punchline_test server/server_punchline_test.cpp)
 archivum_add_server_test(server_contract_test server/server_contract_test.cpp)
+archivum_add_server_test(server_archive_test server/server_archive_test.cpp)
+target_link_libraries(server_archive_test PRIVATE archivum_engine_testing)
 set_tests_properties(server_contract_test PROPERTIES ENVIRONMENT "ARCHIVUM_SOURCE_DIR=${CMAKE_SOURCE_DIR}")
 archivum_add_server_test(server_saturation_test server/server_saturation_test.cpp)
