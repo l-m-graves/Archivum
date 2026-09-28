@@ -49,7 +49,7 @@ jobs:
           # (Argon2id for credentials) is an autotools build.
           apt-get install -y --no-install-recommends git ca-certificates cmake ninja-build g++-12 \
             curl zip unzip tar pkg-config python3 make perl linux-libc-dev \
-            autoconf autoconf-archive automake libtool
+            autoconf autoconf-archive automake libtool gnupg
           mkdir -p /opt/vcpkg-cache
           cmake --version
           g++-12 --version
@@ -93,22 +93,6 @@ jobs:
           TSAN_OPTIONS: halt_on_error=1 second_deadlock_stack=1
         run: ctest --preset ${{ matrix.preset }}
 
-  windows:
-    name: windows-${{ matrix.config }} (windows-2022, msvc 2022)
-    runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - config: debug
-            crash_iters: "1000"
-          - config: release
-            crash_iters: "10000"
-    env:
-      VCPKG_ROOT: C:\vcpkg-pinned
-      VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-cache
-    steps:
-      - uses: actions/checkout@v4
       - name: The rewritten Punchline client against this build, end to end (Stage 6-C gate)
         # Token-gated like contract-fastapi: the client lives in the Punchline
         # repository. Builds punchline-cli (the sync layer from a console, with
@@ -129,6 +113,22 @@ jobs:
           cmake -S /tmp/punchline/client -B /tmp/punchline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPUNCHLINE_REQUIRE_SODIUM=ON
           cmake --build /tmp/punchline-build --target punchline-cli
           sh tests/e2e/client_e2e.sh "$PWD/build/${{ matrix.preset }}" /tmp/punchline-build
+  windows:
+    name: windows-${{ matrix.config }} (windows-2022, msvc 2022)
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - config: debug
+            crash_iters: "1000"
+          - config: release
+            crash_iters: "10000"
+    env:
+      VCPKG_ROOT: C:\vcpkg-pinned
+      VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-cache
+    steps:
+      - uses: actions/checkout@v4
       - name: Toolchain versions
         shell: pwsh
         run: |

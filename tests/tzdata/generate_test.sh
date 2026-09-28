@@ -58,6 +58,7 @@ grep -q "XDT" "$out/gen3/pinned-transitions.txt"   # nothing was written
 echo "tzdata_generate_test: pin drift without a release change is refused"
 
 # 4
+command -v gpg >/dev/null 2>&1 || { echo "FAIL: gpg is required for the signature test (Ubuntu: gnupg)"; exit 1; }
 export GNUPGHOME="$out/gnupg"
 mkdir -m 700 "$GNUPGHOME"
 gpg --batch --quiet --pinentry-mode loopback --passphrase '' --quick-generate-key "tz test <tz@example.invalid>" ed25519 sign never 2>/dev/null
