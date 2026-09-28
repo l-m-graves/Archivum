@@ -47,6 +47,11 @@ add_executable(tzcheck_synthetic ${CMAKE_SOURCE_DIR}/tools/tzdata/tzcheck.cpp ${
 target_include_directories(tzcheck_synthetic PRIVATE ${CMAKE_SOURCE_DIR}/modules/punchline/include)
 target_link_libraries(tzcheck_synthetic PRIVATE archivum_engine archivum_warnings)
 add_test(NAME tzcheck_synthetic_test COMMAND tzcheck_synthetic --pinned ${CMAKE_CURRENT_SOURCE_DIR}/tzdata/generated/pinned-transitions.txt)
+# Pins scoped to another release fail the check before any transition is looked at.
+add_test(NAME tzcheck_synthetic_wrong_release_test
+  COMMAND tzcheck_synthetic --pinned ${CMAKE_CURRENT_SOURCE_DIR}/tzdata/pinned-transitions-wrong-release.txt)
+set_tests_properties(tzcheck_synthetic_wrong_release_test PROPERTIES
+  PASS_REGULAR_EXPRESSION "scoped to release 2000b, the embedded database is 2000a")
 if(NOT WIN32)
   add_test(NAME tzdata_generate_test COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tzdata/generate_test.sh ${CMAKE_SOURCE_DIR})
 endif()

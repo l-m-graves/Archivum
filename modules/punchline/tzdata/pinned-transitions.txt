@@ -1,1 +1,4 @@
-# GENERATED placeholder: no database embedded yet; tools/tzdata/generate.py replaces this file.
+# PLACEHOLDER: no IANA release is vendored yet (third_party/tzdata/README.md).
+# The generator replaces this file; tzcheck reads it only once a database is
+# embedded, and then requires its "# release" line to name the embedded release.
+# release 2026d

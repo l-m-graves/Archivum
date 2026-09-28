@@ -84,14 +84,18 @@ v1 ships when all of these hold. They are the pilot gates from
   zone against the embedded IANA database, never from the device's clock;
   the device's wall clock compared and a disagreement queued; DST
   transitions of every deployed site zone pinned and asserted at build
-  time (Stage 6 rulings, item 1).
+  time, the pins scoped to the vendored release and a release change
+  reviewed as a transition diff (Stage 6 rulings, item 1 and follow-up).
 - Rollback rehearsed with the reverse export: `archivum rollback-export`
   run against real pilot data, replayed into the old server through its
   own ingest endpoint, and the old server serving the restored data
   (`tests/contract/test_rollback.py` against the real export), before
   cutover. Parallel running is phased by device (pilot devices on the new
   client against Archivum, everyone else on the old client against
-  FastAPI), never dual-written.
+  FastAPI), never dual-written. The rehearsal's sign-off records the
+  limitation: the old store has no approval state, exception records or
+  device attestation, so rollback preserves hours, not the approval
+  trail (`docs/handbook.md`).
 - No shared token anywhere; every pilot device enrolled individually with
   revocation tested end to end.
 - Audit trail verified for every mutating endpoint and every lifecycle

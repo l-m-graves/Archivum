@@ -90,7 +90,37 @@ design, approved as option B:
   transition pinned at generation time for the zones in
   `tools/tzdata/pinned-zones.txt`, which must list every deployed site
   zone (the section 11 answer extends it); on Linux the regeneration is
-  also diffed byte for byte.
+  also diffed byte for byte;
+- **the pins are release-scoped** (follow-up ruling): `pinned-zones.txt`
+  and the generated `pinned-transitions.txt` both name the IANA release
+  they were taken from, and `tzcheck` fails the build when the embedded
+  database's version is not that release, before it looks at a single
+  transition. Pins from one release prove nothing about another. Changing
+  the vendored release is an explicit act: the generator refuses a
+  tarball of another release unless run with `--new-release`, and then it
+  rewrites the release line, regenerates the pins and prints the
+  transition diff, which the commit carries and the reviewer reads. Pins
+  that would change without a release change (a tool difference, a
+  non-determinism) are refused outright;
+- `zic` and `zdump` are the release's own, built from the `tzcode`
+  tarball of the same release, whose version is checked against the data
+  tarball's; the build host's copies are accepted only for the synthetic
+  release the tests use, and the output records which was used.
+
+**tzdb models legal intent and sometimes lags it.** The database encodes
+what the maintainers have confirmed a jurisdiction will do, on the date
+they model it taking effect, and both can differ from the law as
+announced: Alberta's permanent −06 is effective in June 2026 by the
+province's act, and the database models the change at the 1 November
+2026 transition, the same way British Columbia's was modelled in release
+2026b. A punch in the window between the legal date and the modelled
+date is assigned by the modelled rule, and a later release can move it.
+That is why the `tzdb_version` stamp on every entry and every period is
+load-bearing rather than decorative: it names the rule set a local day
+was computed under, so that a re-computation under a later release is a
+visible change with a reason, never a silent one. Nothing recomputes an
+entry's local day on its own; a period's entries are settled under the
+release that was embedded when they were assigned.
 
 **Status**: the reader, the generator, the build-time check and their
 tests are in (`tzif_test` on synthetic fixtures including both 2026
@@ -316,6 +346,19 @@ trip, and `tests/contract/test_rollback.py`, which replays an export into
 the FastAPI backend and asserts the old server serves every entry back
 with the same values and that a second replay stores nothing twice. The
 gate is that replay run against the real pilot export.
+
+**What rollback preserves, and what it cannot** (ruling, recorded for the
+handbook: `docs/handbook.md`). The old store has no schema for approval
+state, for exception records or for device attestation. A shift exported
+back to it arrives as a completed entry with hours, note and routing,
+exactly as the old client would have posted it, and nothing else: the
+`archivum_state` key is for the operator's eyes and the old server
+ignores it. Rollback therefore preserves **hours, not the approval
+trail**: which supervisor approved what and when, every exception and
+its resolution, whether a punch was attested by a device, and every
+transition in the period's audit report stay in Archivum's store and its
+archived logs. A rollback plan has to say where those are kept and for
+how long; it cannot say they were carried across.
 
 ## Not in Stage 6
 

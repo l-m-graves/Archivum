@@ -1,11 +1,12 @@
 // Build-time assertion for the embedded time zone database (Stage 6
-// rulings, item 1): the embedded bytes must reproduce every pinned
-// transition (pinned-transitions.txt, produced by zdump at generation
-// time), and, where zdump is on the build host, zdump run over the
-// embedded bytes themselves must agree with the reader for every pinned
-// zone over the pinned window. Any disagreement fails the build. With no
-// database embedded it says so and fails too, unless --allow-empty is
-// given (the placeholder before the IANA release is vendored).
+// rulings, item 1): the embedded database must be the release the pins
+// are scoped to (the "# release" line of pinned-transitions.txt, written
+// by the generator from the tarball) and must reproduce every pinned
+// transition (produced by zdump at generation time). Any disagreement
+// fails the build, a release mismatch first of all: pins from one release
+// prove nothing about another. With no database embedded it says so and
+// fails too, unless --allow-empty is given (the placeholder before the
+// IANA release is vendored).
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -45,9 +46,20 @@ int main(int argc, char** argv) {
   if (!in) return fail("cannot read " + pinned_path);
   std::string line;
   int checked = 0;
+  std::string pinned_release;
   std::vector<std::string> problems;
   while (std::getline(in, line)) {
+    if (line.rfind("# release ", 0) == 0) {
+      pinned_release = line.substr(10);
+      while (!pinned_release.empty() && (pinned_release.back() == ' ' || pinned_release.back() == '\r')) pinned_release.pop_back();
+      if (pinned_release != db.version) {
+        return fail("the pinned transitions are scoped to release " + pinned_release + ", the embedded database is " + db.version +
+                    "; regenerate the pins for the vendored release (tools/tzdata/generate.py --new-release) and review the diff");
+      }
+      continue;
+    }
     if (line.empty() || line[0] == '#') continue;
+    if (pinned_release.empty()) return fail("pinned file has no '# release <name>' header before its first transition: " + pinned_path);
     std::istringstream ss(line);
     std::string zone_name, abbrev;
     long long instant = 0, utoff = 0;
@@ -67,9 +79,11 @@ int main(int argc, char** argv) {
     }
     ++checked;
   }
+  if (pinned_release.empty()) return fail("pinned file names no release: " + pinned_path);
   if (checked == 0) return fail("no pinned transitions in " + pinned_path);
   for (const std::string& p : problems) std::fprintf(stderr, "tzcheck: %s\n", p.c_str());
   if (!problems.empty()) return 1;
-  std::printf("tzcheck: %d pinned transitions reproduced by the embedded %s database (%zu zones)\n", checked, db.version, db.count);
+  std::printf("tzcheck: embedded database is release %s as pinned; %d pinned transitions reproduced (%zu zones)\n", db.version, checked,
+              db.count);
   return 0;
 }

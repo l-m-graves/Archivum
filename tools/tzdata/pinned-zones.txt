@@ -1,9 +1,20 @@
 # Zones whose transitions are pinned from zdump at generation time and
 # asserted at build time (tools/tzdata/generate.py, tools/tzdata/tzcheck).
-# One per line: zone<space>fromyear-toyear. Every site zone that will be
-# deployed must be here (Stage 6 rulings, item 1); the section 11 answer
-# "site time zones" extends this list. Until it arrives: the fixture's
-# zone, UTC, and one zone in each hemisphere with DST.
+#
+# The pins are release-scoped (Stage 6 rulings, follow-up item 1). The
+# `release` line names the IANA release the pinned transitions were taken
+# from; the generator refuses a tarball of any other release unless it is
+# told the release is being changed (--new-release), in which case it
+# rewrites this line, regenerates pinned-transitions.txt and prints the
+# transition diff, which is reviewed in the commit, never accepted
+# silently. tzcheck fails the build when the embedded database's version
+# is not the release named here and in the pin file's header.
+release 2026d
+#
+# One zone per line: zone<space>fromyear-toyear. Every site zone that will
+# be deployed must be here; the section 11 answer "site time zones"
+# extends this list. Until it arrives: the fixture's zone, UTC, and one
+# zone in each hemisphere with DST.
 America/Los_Angeles 2020-2031
 America/New_York 2020-2031
 UTC 2020-2031

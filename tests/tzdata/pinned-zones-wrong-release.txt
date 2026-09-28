@@ -1,0 +1,6 @@
+# The synthetic release is 2000a; this file names another so the tests can
+# prove that the generator and tzcheck refuse a release the pins are not
+# scoped to.
+release 2000b
+Test/Pacific 2020-2031
+Test/UTC 2020-2031

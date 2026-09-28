@@ -1,2 +1,3 @@
-2000a
-fd287f3f17dfc6c94da3838855c493e7c3b93aa825599df1cb79e4d59e9275d0
+release 2000a
+tzdata-sha256 fd287f3f17dfc6c94da3838855c493e7c3b93aa825599df1cb79e4d59e9275d0
+tools HOST zic and zdump, not the release's own: tests only
