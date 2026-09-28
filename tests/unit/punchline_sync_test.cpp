@@ -15,6 +15,7 @@
 #include "archivum/punchline/rollback.h"
 #include "archivum/punchline/schema.h"
 #include "archivum/punchline/sync.h"
+#include "archivum/punchline/tzif.h"
 #include "archivum/testing/mem_vfs.h"
 #include "test.h"
 
@@ -213,6 +214,39 @@ ARCHIVUM_TEST(sync_accepts_pairs_and_is_idempotent) {
   auto rd = w.store->begin_read();
   auto d = device_by_id(*rd.value(), 1);
   CHECK(d.value()->last_acked_sequence == 2 && d.value()->last_seen_at == w.now && d.value()->last_journal_id.value() == uid(500));
+}
+
+ARCHIVUM_TEST(sync_fills_site_zone_and_release_when_the_device_sends_none) {
+  // The rewritten client (Stage 6-C) sends no tzdb_version and, before its
+  // first heartbeat, no site_zone: both are the server's to fill in.
+  World w;
+  w.open();
+  IncomingBatch b;
+  b.batch_uuid = uid(150);
+  b.journal_id = uid(550);
+  IncomingEntry in = w.punch(1, 1, "in", 0, 9);
+  in.site_zone.clear();
+  in.tzdb_version.clear();
+  IncomingEntry out = w.punch(2, 2, "out", 0, 17);
+  out.site_zone = "Europe/London";  // a device may send one; it is kept as sent
+  out.tzdb_version.clear();
+  b.entries = {in, out};
+  auto o = w.sync(b);
+  REQUIRE_OK(o.status());
+  CHECK(o.value().accepted == 2 && o.value().rejected == 0);
+  auto rd = w.store->begin_read();
+  REQUIRE_OK(rd.status());
+  auto e1 = entry_by_uuid(*rd.value(), in.entry_uuid);
+  auto e2 = entry_by_uuid(*rd.value(), out.entry_uuid);
+  REQUIRE_OK(e1.status());
+  REQUIRE_OK(e2.status());
+  REQUIRE(e1.value().has_value() && e2.value().has_value());
+  CHECK(e1.value()->site_zone == "UTC");  // the employee record's
+  CHECK(e2.value()->site_zone == "Europe/London");
+  const auto release = tz::database_version();
+  const std::string expected = release.ok() ? release.value() : "";
+  CHECK(e1.value()->tzdb_version == expected);
+  CHECK(e2.value()->tzdb_version == expected);
 }
 
 ARCHIVUM_TEST(sync_rejects_per_entry_and_flags_the_exception_queue) {

@@ -2,6 +2,7 @@
 #include <string>
 #include <cstdint>
 #include "archivum/punchline/sync.h"
+#include "archivum/punchline/tzif.h"
 
 #include <algorithm>
 #include <map>
@@ -140,8 +141,12 @@ Status validate_incoming(const IncomingEntry& e) {
   if (e.device_time_us <= 0) return Status::invalid_argument("device_time_us must be positive");
   if (e.journal_sequence < 0) return Status::invalid_argument("journal_sequence must be non-negative");
   if (auto lt = parse_local_time(e.local_time); !lt.ok()) return lt.status();
-  if (e.site_zone.empty() || e.site_zone.size() > 64) return Status::invalid_argument("site_zone is required");
-  if (e.tzdb_version.empty() || e.tzdb_version.size() > 32) return Status::invalid_argument("tzdb_version is required");
+  // site_zone and tzdb_version are optional from the device: the employee
+  // record's zone and the embedded database's release are the server's
+  // to fill in (Stage 6-C found the rewritten client sends neither, by
+  // design: the server computes local time, docs/punchline-module.md).
+  if (e.site_zone.size() > 64) return Status::invalid_argument("site_zone is too long");
+  if (e.tzdb_version.size() > 32) return Status::invalid_argument("tzdb_version is too long");
   if (e.note.size() > 4096) return Status::invalid_argument("note is too long");
   if (e.pay_code.size() > 64) return Status::invalid_argument("pay_code is too long");
   return Status();
@@ -310,6 +315,13 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
   auto seen = batch_by_uuid(w, batch.batch_uuid);
   if (!seen.ok()) return seen.status();
   out.replayed = seen.value().has_value();
+  // What the server fills in when the device sends none (Stage 6-C).
+  auto employee = employee_by_id(w, device.employee_id);
+  if (!employee.ok()) return employee.status();
+  if (!employee.value().has_value()) return Status::not_found("the device's employee does not exist");
+  const std::string employee_zone = employee.value()->site_zone;
+  const auto release = tz::database_version();
+  const std::string embedded_release = release.ok() ? release.value() : "";
   if (batch.client_time_us != 0) {
     out.clock_divergence_us = now_us - batch.client_time_us;
     const std::int64_t tol = cfg.clock_divergence_tolerance_seconds * 1'000'000;
@@ -424,8 +436,8 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
     e.kind = in.kind;
     e.device_time = in.device_time_us;
     e.local_time = in.local_time;
-    e.site_zone = in.site_zone;
-    e.tzdb_version = in.tzdb_version;
+    e.site_zone = in.site_zone.empty() ? employee_zone : in.site_zone;
+    e.tzdb_version = in.tzdb_version.empty() ? embedded_release : in.tzdb_version;
     e.receipt_time = now_us;
     e.attestation = "device";
     e.clock_divergence_us = out.clock_divergence_us;

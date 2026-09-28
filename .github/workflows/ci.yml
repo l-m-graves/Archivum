@@ -109,6 +109,26 @@ jobs:
       VCPKG_DEFAULT_BINARY_CACHE: C:\vcpkg-cache
     steps:
       - uses: actions/checkout@v4
+      - name: The rewritten Punchline client against this build, end to end (Stage 6-C gate)
+        # Token-gated like contract-fastapi: the client lives in the Punchline
+        # repository. Builds punchline-cli (the sync layer from a console, with
+        # the OpenSSL transport) and runs tests/e2e/client_e2e.sh against
+        # tests/e2e/e2e_server. PUNCHLINE_CLIENT_REF moves to main once the
+        # client branch is merged there.
+        if: matrix.preset == 'linux-release'
+        env:
+          TOKEN: ${{ secrets.PUNCHLINE_REPO_TOKEN }}
+          PUNCHLINE_CLIENT_REF: claude/stage-6c-sync-layer
+        run: |
+          if [ -z "$TOKEN" ]; then
+            echo "PUNCHLINE_REPO_TOKEN is not set: skipping the end-to-end client run"
+            exit 0
+          fi
+          apt-get install -y --no-install-recommends libsodium-dev libssl-dev
+          git clone --depth 1 --branch "$PUNCHLINE_CLIENT_REF" "https://x-access-token:${TOKEN}@github.com/l-m-graves/Punchline.git" /tmp/punchline
+          cmake -S /tmp/punchline/client -B /tmp/punchline-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DPUNCHLINE_REQUIRE_SODIUM=ON
+          cmake --build /tmp/punchline-build --target punchline-cli
+          sh tests/e2e/client_e2e.sh "$PWD/build/${{ matrix.preset }}" /tmp/punchline-build
       - name: Toolchain versions
         shell: pwsh
         run: |

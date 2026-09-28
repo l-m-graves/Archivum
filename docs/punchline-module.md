@@ -19,7 +19,7 @@ over HTTPS in `tests/server/server_punchline_test.cpp`.
 { "batch_uuid": uuid, "journal_id": uuid, "client_time_us": int?,
   "entries": [ { "entry_uuid": uuid, "journal_sequence": int, "kind": "in"|"out",
                  "device_time_us": int, "local_time": "YYYY-MM-DDTHH:MM:SS",
-                 "site_zone": "IANA zone", "tzdb_version": "2024a",
+                 "site_zone": "IANA zone"?, "tzdb_version": text?,
                  "pay_code": text?, "note": text? } ],
   "reports": [ { "kind": "retry_exhausted"|"journal_recovery", "detail": text } ]? }
 ```
@@ -55,6 +55,12 @@ actor the device). Rules:
   cannot be attributed to an entry (not an object, `entries` not an
   array) refuses the request, and a batch over `max_batch_entries` is 413
   before anything is looked at.
+- **`site_zone` and `tzdb_version` are the server's to fill.** The
+  rewritten client (Stage 6-C) sends the site zone only as the last
+  heartbeat told it and never sends a release name; an entry without them
+  takes the employee record's zone and the embedded database's release.
+  Found by the end-to-end run, not assumed: the first real batch from the
+  rewritten client was refused for a missing `tzdb_version`.
 - Every accepted punch is `attestation: device`, `state: recorded`,
   stamped with the server's receipt time and the batch's clock divergence,
   and assigned to the pay period containing its local day (PL-3), or to

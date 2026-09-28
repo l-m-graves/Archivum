@@ -603,6 +603,21 @@ void PunchlineModule::register_routes(App& app_ref) {
             if (auto r = punchline::resolve_matching(rec, stale, "heartbeat", self->now_us()); !r.ok()) co_return status_response(r.status(), request_id);
           }
         }
+        // Whether the employee is clocked in by the server's fold: an open
+        // shift in a state before approval. The client shows this after a
+        // restart when nothing is pending on the device (Stage 6-C).
+        bool clocked_in = false;
+        for (const char* state : {"recorded", "submitted"}) {
+          Status s = w.value()->scan("shifts", "shifts_employee_state",
+                                     engine::Bound{{engine::Value::integer(d.employee_id), engine::Value::text(state)}},
+                                     engine::Bound{{engine::Value::integer(d.employee_id), engine::Value::text(state)}}, false,
+                                     [&](const engine::Row& row) {
+                                       if (punchline::Shift::from_row(row).out_entry_id == 0) clocked_in = true;
+                                       return !clocked_in;
+                                     });
+          if (!s.ok()) co_return status_response(s, request_id);
+          if (clocked_in) break;
+        }
         if (Status s = w.value()->commit(); !s.ok()) co_return status_response(s, request_id);
         nlohmann::json out;
         out["employee"]["display_name"] = emp.value()->display_name;
@@ -610,6 +625,7 @@ void PunchlineModule::register_routes(App& app_ref) {
         out["employee"]["site_zone"] = emp.value()->site_zone;
         out["server_time_us"] = self->now_us();
         out["last_acked_sequence"] = d.last_acked_sequence;
+        out["clocked_in"] = clocked_in;
         if (client_time.value() != 0) out["clock_divergence_us"] = self->now_us() - client_time.value();
         co_return ok_response(out, request_id);
       },

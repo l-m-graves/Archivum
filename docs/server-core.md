@@ -131,7 +131,7 @@ registers routes. Punchline is the built-in module.
 | `GET/POST /api/v1/admin/devices` | | admin or device_admin | enroll `{employee_number, name}`; answers the credential once |
 | `POST /api/v1/admin/devices/{uuid}/revoke` | | admin or device_admin | `{reason}` |
 | `POST /api/v1/admin/supervisors` | | admin | `{employee_number, supervisor_employee_number, effective_from_us, effective_to_us?}` |
-| `POST /api/v1/device/heartbeat` | device | | `{client_time_us?}`; answers the enrollment's employee and the clock divergence |
+| `POST /api/v1/device/heartbeat` | device | | `{client_time_us?}`; answers the enrollment's employee, the clock divergence, and `clocked_in` (an open shift by the server's fold) |
 
 Every body is parsed by `parse_body`: not an object, an unknown key, or
 `employee_id` at any depth is 400 with a message naming the key. The

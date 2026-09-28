@@ -83,3 +83,8 @@ archivum_add_server_test(server_archive_test server/server_archive_test.cpp)
 target_link_libraries(server_archive_test PRIVATE archivum_engine_testing)
 set_tests_properties(server_contract_test PROPERTIES ENVIRONMENT "ARCHIVUM_SOURCE_DIR=${CMAKE_SOURCE_DIR}")
 archivum_add_server_test(server_saturation_test server/server_saturation_test.cpp)
+# The end-to-end server for the rewritten Punchline client (tests/e2e/): not
+# a test itself; tests/e2e/client_e2e.sh starts it and drives the client.
+add_executable(e2e_server e2e/e2e_server.cpp)
+target_link_libraries(e2e_server PRIVATE archivum_server archivum_server_testing archivum_testsupport archivum_warnings)
+target_include_directories(e2e_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/server)

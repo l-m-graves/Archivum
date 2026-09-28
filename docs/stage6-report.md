@@ -384,3 +384,168 @@ comments and `docs/server-core.md` say the same.
 2. `generate.py` run, `ARCHIVUM_TZDATA_ALLOW_EMPTY` OFF, the sync path
    switched, the site-zone transition tests through sync, and the gate
    line in section 6 updated. Then Stage 8-P.
+
+## 10. Third rulings (2026-09-27), applied; Stage 6-C delivered
+
+### The tarball, still
+
+The message said the release tarballs (`tzdata2026d`, `tzcode2026d`,
+each with its `.asc`) would be committed with the next message. Nothing
+under `third_party/tzdata/` has arrived in this environment as of this
+section. I have not substituted a distribution copy or fetched anything:
+`data.iana.org` and the tz mirror on GitHub are unreachable from here,
+and the ruling says not to. The pins are scoped to 2026d
+(`tools/tzdata/pinned-zones.txt`), so the generator will accept exactly
+that release and refuse any other without `--new-release`. When the four
+files land, the run is the one in `third_party/tzdata/README.md`, and it
+records both SHA-256 values, the key fingerprint from the announcement,
+and `gpg --verify`'s answer in `docs/toolchain.md`.
+
+### Item 1, release-scoped pins: done
+
+- `pinned-zones.txt` carries `release 2026d`; the generated pin file
+  carries `# release <name>`; `tzcheck` fails the build when the embedded
+  database's version is not the pins' release, before it reads a
+  transition. Proven by `tzcheck_synthetic_wrong_release_test` (pins
+  scoped to 2000b against the embedded synthetic 2000a: refused by name).
+- Changing the release is explicit: the generator refuses another
+  release's tarball unless run with `--new-release`, then rewrites the
+  release line, regenerates the pins and prints the transition diff
+  between old and new pins; the commit carries the diff for review.
+  Pins that would change without a release change are refused as a tool
+  difference or a non-determinism. `tzdata_generate_test` proves the
+  refusal, the rewrite, and the drift refusal.
+- `zic` and `zdump` come from the tzcode tarball of the same release:
+  `--tzcode` extracts it, checks its `version` against the data
+  tarball's, runs `make zic zdump`, and requires the built `zic` to
+  report the release. The host's tools are accepted only with
+  `--host-tools`, which the synthetic test uses, and the output records
+  which was used (without the host tool's version string, so
+  regeneration stays byte-identical across hosts). The tzcode path is
+  proven against a synthetic tzcode tarball whose Makefile builds
+  wrappers that report the release; a tzcode of another release is
+  refused. The real `make` on the real tzcode runs when the tarball is
+  here.
+- Signatures: `--signature` and `--fingerprint` run `gpg --verify` and
+  require `VALIDSIG` by exactly the announced key; "valid under some key"
+  is refused. Proven with a throwaway key in a temporary keyring: the
+  right fingerprint passes, another is refused by name.
+- The statement that tzdb models legal intent and sometimes lags it
+  (Alberta's permanent −06 effective June 2026, modelled at 1 November
+  2026 like BC in 2026b), and why `tzdb_version` is load-bearing, is in
+  `docs/punchline-module.md` under "Local time".
+
+### Item 3, rollback limitation: recorded
+
+`docs/handbook.md` is the seed of the IT handbook (Stage 11 completes
+it), and its cutover-and-rollback section states it: the old store has
+no schema for approval state, exception records or device attestation;
+rollback preserves hours, not the approval trail; the trail stays in
+Archivum's store, archived logs and backups, which a rollback plan
+retains and names. The same statement is in the module doc's "Rollback"
+and in the v1 gate.
+
+### Item 2, Stage 6-C: delivered on the branch `claude/stage-6c-sync-layer` of the Punchline repository
+
+Everything the plan row lists is built and tested; the Punchline
+repository's `docs/client-sync.md` is the design document.
+
+| Scope item | Where | Proof |
+|---|---|---|
+| Per-device credential in place of the shared token | `client/sync/credential.h`: `Device <uuid>:<secret>` as Archivum issues it, in the DPAPI store on Windows; enrollment saves, heartbeats, and clears on refusal | `credential_*` tests; end-to-end steps 1 and 5 (wrong credential refused and nothing kept; revoked device refused, punch kept on the device) |
+| Employee identity dropped from the payload | `punch.h`: the journal payload and the wire entry have no field for it | `payload_punch_round_trips_...` scans the encoding for "employee"; the server model answers 400 to an `employee_id` anywhere and the crash suite asserts it never happened; end-to-end step 6 greps the server log |
+| The journal driving the batch shape, `(journal id, sequence)` idempotency, acknowledgement-driven compaction | `sync_client.h`: batches from pending records, `journal_sequence` from the record, acknowledgement of accepted and rejected entries, resend of unmentioned ones, `Compact` after `compact_after_acks` | `sync_*` tests; the crash suite's sequence-conflict and drain assertions; end-to-end step 4 (the same punch resent from a restored journal: accepted again, no second row) |
+| Three time values and the site zone from the heartbeat | `clock.h` (`device_time_us`, `local_time` as the OS shows it), `site_zone` cached from the heartbeat and refreshed | `sync_heartbeat_updates_the_enrollment`; end-to-end step 2 |
+| Device-attested marking left to the server | nothing in the client claims it | timesheet read-back in end-to-end step 3: `attestation: device` |
+| Bounded retry with backoff, cap reporting `retry_exhausted` and `journal_recovery` | `sync_client.cpp`: offline never burns an attempt; 5xx, garbage and empty answers do; the cap writes the report into the journal and it rides the next batch | `sync_offline_backs_off...`, `sync_retry_cap_reports...`, `sync_garbage_answers...`, `sync_recovery_report_rides...`; the crash suite asserts every exhaustion and every recovery with loss reached the server |
+| Enrollment screen taking the one-time credential into the DPAPI store | `client/app/main.cpp`: enrollment window (server URL, credential, PIN twice), punch window | compiled by the Windows CI job; not runnable here |
+| Crash suite over journal plus sync | `client/sync/tests/test_crash_sync.cpp` with `testing/fake_server.h` | eight seeds under ctest, 20,000 operations under one seed in CI; a 20,000-operation local run: 8,922 punches, 2,458 crashes, 440 lost answers, 359 server errors, 582 rejections, everything delivered exactly as the model says |
+| Contract suite from the real client against Archivum | `tests/e2e/client_e2e.sh` here, `tests/e2e/e2e_server.cpp`, `punchline-cli` there | passes locally (transcript below); a token-gated step of the Linux release CI job, like `contract-fastapi` |
+
+The end-to-end run, as it prints:
+
+```
+e2e: 1. wrong credential refused, nothing kept
+e2e: 2. enrolled; heartbeat named E0001 in America/Los_Angeles
+timesheet: 2 device-attested entries, 1 closed shift, journal sequences 1 and 2
+e2e: 3. punches delivered and on the timesheet
+e2e: 4. the same punch resent from the restored journal: accepted again, 3 rows not 4
+e2e: 4b. the heartbeat says the employee is clocked in by the server's fold
+e2e: 5. revoked device refused; the punch stays on the device
+e2e: 6. 3 batches logged, no employee id asserted
+client_e2e: PASS
+```
+
+**What the run found.** The first real batch from the rewritten client
+was refused by Archivum: "tzdb_version is required". The sync path
+required a release name from the device, while the ruling says the
+release is the server's and a client's opinion of it is ignored. Fixed
+on the server: `site_zone` and `tzdb_version` are optional from a device;
+an entry without them takes the employee record's zone and the embedded
+database's release (`sync_fills_site_zone_and_release_when_the_device_sends_none`).
+The contract doc is corrected. This is the kind of disagreement the
+end-to-end gate exists to find, and it was not visible from either
+side's own tests.
+
+**One server addition**: the heartbeat answers `clocked_in`, whether the
+employee has an open shift by the server's fold, so the punch screen
+shows the right button after a restart with nothing pending on the
+device. The device's own last punch wins while anything is pending.
+
+**Not in 6-C, by the plan**: the server's comparison of the device's
+`local_time` with its own computation (`local_clock_mismatch`) lands with
+the switch commit; the old client's SQLite queue is not migrated
+(cutover by device, old queue drained into the old server first, no
+dual-write).
+
+**Estimate against actual.** The row said 3 to 5 weeks; the work here is
+one session, because the journal and the verifier were already built and
+tested, the contract was already pinned by the scenario file, and the
+Win32 screens are a straight rewrite of the prototype's. The Windows
+build of the screens and of WinHTTP is verified by CI, not by hand, and
+that is the part that could still cost time.
+
+**Branch and merge.** The client is on `claude/stage-6c-sync-layer` of
+the Punchline repository (I did not push to `main` there; the branch
+rule in this session names only Archivum). Archivum's CI step checks
+out that branch by name (`PUNCHLINE_CLIENT_REF`) and moves to `main`
+when it is merged.
+
+## 11. Stage 8-P, the plan (draft, to be confirmed once item 1's switch has landed)
+
+Per your item 5, the Stage 8-P report is due with the switch commit. The
+plan is drafted here so that nothing waits on the tarball but the
+switch itself.
+
+**Scope (plan row 8-P, 4 to 6 weeks)**: the Punchline web views, served
+by Archivum itself (no separate front-end host; static files under the
+server's own TLS, Entra sign-in through the existing OIDC bearer):
+
+1. **Employee self-service** (`/api/v1/me`, `/timesheets/{period}/me`,
+   `/me/flag`): my punches and shifts by day, my approver, open items,
+   the flag-to-approver form. 0.5 week.
+2. **Supervisor queue** (`/supervisor/periods/{id}`, approve, the
+   exception list scoped to my reports, resolve and dismiss, manual entry
+   with reason): the daily screen. 1 to 1.5 weeks.
+3. **Exception queue** across kinds with the filters the module already
+   answers (`?kind=`), device items to payroll and admin. 0.5 week.
+4. **Payroll console** (release, lock, the hours-by-employee-by-pay-code
+   view, CSV export, the period audit report). 1 week.
+5. **Admin**: employees with company and cost centre, device enrollment
+   showing the credential once, revocation with reason, supervisor
+   assignments with the half-open intervals, schedules, pay periods,
+   the segregation-of-duties report. 1 week.
+6. **Cross-cutting**: one page shell, sign-in state, role-driven
+   navigation from the roles the token carries, request ids surfaced on
+   every error, a browser test run (Playwright in CI against the test
+   fixture, the same `ServerFixture` the e2e server uses) for the
+   approve and release flows. 0.5 to 1 week.
+
+**Rulings I will ask for at the start of 8-P**, so they are on the table
+now: whether the views are served by Archivum (my proposal) or hosted
+elsewhere; whether a supervisor may approve from the exception queue
+directly or only from the period screen (my proposal: only from the
+period screen, so the approval trail has one entry point); and the CSV
+export's exact column set for the payroll system, which section 11's
+answer on pay codes decides.
+
