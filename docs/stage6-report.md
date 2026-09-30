@@ -661,7 +661,12 @@ repository yet as of this writing.
   c67f6f9), whole suite, crash and model tests at 200 iterations,
   `concurrency`-labelled tests at full counts: the test step took
   **7 min 38 s** (ctest wall 457.9 s; the concurrency-labelled tests 274 s
-  of process time), in a job of 11 min. Before, with the label filter, the
+  of process time), in a job of 11 min. **Run 40** (59352e9, with migration 2
+  and its tests): **ctest wall 573.8 s (9 min 34 s)**, the concurrency
+  label 243 s of process time; `server_punchline_test` alone took 103 s under
+  TSan against 29 to 34 s on the plain debug job. The figure moves with the
+  suite: the new server scenarios are the difference. Plain debug on the
+  same run: 244 s. Before, with the label filter, the
   same step took 4 min 23 s (run 37). The cost of running everything under
   TSan is about three and a quarter minutes per push. I did not trim
   anything to reach it. Locally the whole suite takes about 150 s at `-j2`
@@ -671,8 +676,10 @@ repository yet as of this writing.
   EMBEDDED (placeholder); day assignment is not possible". Every other
   test passed in all five (33 tests, 32 on Windows, which has no
   `tzdata_generate_test`). The two token-gated steps add their own red
-  until the secret is set. Run 40 (migration 2, 59352e9) was queued when
-  this was written.
+  until the secret is set. Run 40 (migration 2, 59352e9): `linux-debug`,
+  `linux-tsan` (33 tests, only `tzcheck_embedded_database` failed) and
+  `linux-release` red for that one reason; `contract-fastapi` red on the
+  token; the two Windows jobs were still running when this was written.
 - **Punchline client.** Run 16 (ca1aa31) was red on Windows only:
   `transport.tls` passed on the real WinHTTP transport, and
   `app.headless.integration` failed at one check, "...and has not been

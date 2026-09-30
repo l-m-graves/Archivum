@@ -46,8 +46,9 @@ iterations under it, because they are single-threaded and ThreadSanitizer
 only slows them; the `concurrency`-labelled tests do not read
 `ARCHIVUM_CRASH_ITERS` and run at their own full counts. Runtime, CI run 39
 (`ubuntu-latest`, gcc 12): the test step took **7 min 38 s** (ctest wall
-457.9 s; the concurrency-labelled tests 274 s of process time). Before the
-change, with the label filter, the same step took 4 min 23 s (run 37). The
+457.9 s; the concurrency-labelled tests 274 s of process time). With migration 2's
+tests added (run 40) it took 9 min 34 s (573.8 s). Before the change, with
+the label filter, the same step took 4 min 23 s (run 37). The
 job's whole length is about 11 min, of which configure and build are 3.5.
 Locally the full suite takes about 150 s at `-j2` under the local
 sanitizers.
