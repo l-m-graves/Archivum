@@ -35,4 +35,19 @@ so no production binary exists without the database.
 ## Iteration counts
 
 The crash and model tests read `ARCHIVUM_CRASH_ITERS`; CI sets it per job
-(1000 debug, 10000 release). `ARCHIVUM_SEED` fixes the base seed.
+(1000 debug, 200 tsan, 10000 release). `ARCHIVUM_SEED` fixes the base seed.
+
+## ThreadSanitizer
+
+`linux-tsan` runs **the whole suite**, not only the tests labelled
+`concurrency`: a race in a path nobody labelled concurrent is the one the
+label would never have found. The crash and model tests shrink to 200
+iterations under it, because they are single-threaded and ThreadSanitizer
+only slows them; the `concurrency`-labelled tests do not read
+`ARCHIVUM_CRASH_ITERS` and run at their own full counts. Runtime, CI run 39
+(`ubuntu-latest`, gcc 12): the test step took **7 min 38 s** (ctest wall
+457.9 s; the concurrency-labelled tests 274 s of process time). Before the
+change, with the label filter, the same step took 4 min 23 s (run 37). The
+job's whole length is about 11 min, of which configure and build are 3.5.
+Locally the full suite takes about 150 s at `-j2` under the local
+sanitizers.

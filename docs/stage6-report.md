@@ -642,3 +642,151 @@ yours to decide: the Punchline repository needs a workflow that runs
 should flip to OFF in CI the moment the database is embedded, which the
 switch commit does.
 
+
+## 13. Fifth rulings (2026-09-30): what was built, the Windows verdict, the TSan runtime
+
+Status: items 1 to 4 of the order done; item 5 (the tzdata switch) waits for
+the four files and the secret, neither of which is on the branch or in the
+repository yet as of this writing.
+
+### Verdicts first
+
+- **Windows, Archivum run 37** ([36781103853](https://github.com/l-m-graves/Archivum/actions/runs/36781103853),
+  commit 7c7f573): `windows-debug` and `windows-release` both **green**
+  (test steps 1 min 25 s and 1 min 7 s). The run's red jobs were
+  `contract-fastapi` and `linux-release`, both on the token-gated steps
+  failing for want of `PUNCHLINE_REPO_TOKEN`, which is what the change
+  made them do. `linux-debug` and `linux-tsan` green.
+- **TSan runtime.** Run 39 ([36787154750](https://github.com/l-m-graves/Archivum/actions/runs/36787154750),
+  c67f6f9), whole suite, crash and model tests at 200 iterations,
+  `concurrency`-labelled tests at full counts: the test step took
+  **7 min 38 s** (ctest wall 457.9 s; the concurrency-labelled tests 274 s
+  of process time), in a job of 11 min. Before, with the label filter, the
+  same step took 4 min 23 s (run 37). The cost of running everything under
+  TSan is about three and a quarter minutes per push. I did not trim
+  anything to reach it. Locally the whole suite takes about 150 s at `-j2`
+  under the local sanitizers.
+- **Run 39 is red for one reason in each of the five C++ jobs:**
+  `tzcheck_embedded_database` failing with "NO TIME ZONE DATABASE IS
+  EMBEDDED (placeholder); day assignment is not possible". Every other
+  test passed in all five (33 tests, 32 on Windows, which has no
+  `tzdata_generate_test`). The two token-gated steps add their own red
+  until the secret is set. Run 40 (migration 2, 59352e9) was queued when
+  this was written.
+- **Punchline client.** Run 16 (ca1aa31) was red on Windows only:
+  `transport.tls` passed on the real WinHTTP transport, and
+  `app.headless.integration` failed at one check, "...and has not been
+  sent yet". It was my test and my test's design, not the app: recording a
+  punch correctly kicks the sync runner, so the headless `punch` command
+  synced in the background before it exited and the test's "pending is 1"
+  observation had only passed by racing it, which also left the
+  fresh-process `sync` step with nothing to deliver. The headless command
+  line now runs the runner without its background thread
+  (`RunnerOptions::background`, tested in `test_runner.cpp`), so `punch`
+  records and `sync` delivers in a different process. Run 17
+  ([36790417716](https://github.com/l-m-graves/Punchline/actions/runs/36790417716),
+  adab03b) on `windows-msvc`: **28 of 28 passed**, including `transport.tls`
+  (5.2 s) and `app.headless.integration` (1.6 s), and the long crash runs.
+  `backend.yml` (the FastAPI tests and the prototype build) was green on
+  runs 1 and 2.
+
+### 1. Build before test
+
+One command, documented in `docs/testing/running-tests.md` and nothing
+else: `ctest --preset <preset>` or `ctest --test-dir <build>`. A fixture
+whose setup test runs `cmake --build` on the whole tree is required by
+every test in both repositories. It is also what made this session's
+failures honest: in the unit test file I edited, a broken build made the
+suite report `build_is_current` failing rather than running an old binary.
+
+### 2. tzcheck fails on an empty database
+
+`ARCHIVUM_TZDATA_ALLOW_EMPTY` defaults OFF; `tzcheck_embedded_database` is
+a ctest test that fails while the database is the placeholder; CI sets
+nothing. A production build runs `tzcheck` after linking. The jobs are red
+for that one reason until the release is vendored; run 39 shows it.
+
+### 3. Backend workflow, route sweep, TSan, Windows transport
+
+- `backend.yml` in the Punchline repository runs `backend/tests` and builds
+  the prototype; `client.yml` has no path filter. Both green.
+- The route sweep `g2_...` found two routes that checked their action
+  before their body; fixed. Every registered route that can carry a body is
+  swept with six body shapes.
+- TSan: above.
+- `WinHttpTransport` against a real TLS listener including certificates it
+  must refuse, and the app's headless mode driving the sync layer through
+  it, with DPAPI: enroll, store, restart (a new process), load, sync. All
+  on Windows in run 17, above. The TLS test server logs every request and
+  every failed handshake, so a refused client is shown to have sent nothing
+  and to have attempted a handshake. Checked by mutation: with
+  certificate verification disabled, three checks go red.
+
+### 4. Schema changes from the payroll reference rules: one migration
+
+`docs/punchline-module.md`, "Payroll reference rules", and
+`docs/punchline-schema.md`, "Migration 2". What to know:
+
+- **The reference document was not available to me.** It is not in either
+  repository, on any branch of the Punchline repository, or attached. The
+  rules are the ones in your message. Two things in them I could not check
+  and therefore did not encode as facts: the meal-premium trigger (more
+  than 45 minutes) and the late/early definitions. The meal rule is stored
+  with its definition and source and **unconfirmed, never applied**; none
+  is seeded. L and E use the schedule tolerance, marked an assumption.
+  Weeks start on Sunday, marked an assumption, configurable.
+- **Does `schedules` carry daily and weekly scheduled hours? No.** It is
+  one row per weekday with start and end minutes. `schedule_hours` is the
+  new effective-dated table.
+- The flag is a hold, separate from the exception queue and from the
+  lifecycle, with the table in the module doc showing why. It is hidden
+  from payroll as a 404, gates release for everyone, and is cleared by the
+  employee's own supervisor's authorization (audited, `overtime.authorize`).
+- **A defect I found in my own first design, now fixed:** the
+  authorization recorded the period's total minutes, so a normal day added
+  afterwards reopened a hold that had been authorized. It now records the
+  overtime excess and compares that; the test that found it is kept.
+- Payroll edits are their own class and audit action; the segregation
+  report counts them. People can grant and revoke supervisors (audited).
+- Employee numbers are strings end to end; a test proves `000123` is not
+  found as `123`.
+- Upgrade from a v1 database is tested from a fixture, with a crash at
+  every step of the migration. The migration rebuilds one core table
+  (`role_grants`, to widen its role check) because the engine has no ALTER.
+- Tests: eight new unit scenarios and three server scenarios (`i_`, `j_`,
+  `k_`), all in CI's suites. A dangling range-for in my first server test
+  was caught by AddressSanitizer, not by an assertion.
+
+### Needs a ruling
+
+1. Administrators can still grant the supervisor role through
+   `/api/v1/admin/roles`. If only People may, admin's route should refuse
+   it. Both paths are audited under different actions.
+2. Supervisors can still enter manual punches for their reports. The
+   reference says payroll edits punches. Kept, as a separate class, until
+   you say whether the supervisor route goes.
+3. The reason-code list, the meal-premium trigger and comparison, and the
+   late/early thresholds: each needs the reference page. Send the page or
+   the values and each is a row, not a migration.
+4. Whether the first payroll edit view in Stage 8-P should show the
+   flagged timesheets' *existence* (a count) or nothing. The code says
+   nothing, as instructed.
+
+### Still open from before
+
+The four tzdata/tzcode files and `PUNCHLINE_REPO_TOKEN`. When both are
+present: verify the signatures, generate, record release, SHA-256 and
+fingerprint in `docs/toolchain.md`, land the switch commit, then the
+Stage 8-P plan with the payroll rules reflected in it.
+
+### The inventory in section 12, as it stands now
+
+Changed by the above: the tzcheck allow-empty default is OFF (the row is
+now "fails"); linux-tsan runs everything; the Punchline repository has a
+workflow for `backend/tests` and the prototype; `WinHttpTransport`, the
+Win32 app's enroll, punch and sync code and the DPAPI store are exercised
+on Windows, including enrollment under DPAPI. Unchanged: the end-to-end
+step and `contract-fastapi` are still unverified until the secret exists;
+`tzdata_generate_test` is still absent on Windows; the client's Windows job
+builds Debug only; the Win32 window itself (as opposed to its headless
+path) is not driven by any test.
