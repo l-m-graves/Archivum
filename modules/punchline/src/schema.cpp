@@ -389,7 +389,8 @@ TableDef exceptions() {
   t.checks = {one_of("exceptions_kind_known", "kind",
                      {"outside_schedule", "non_scheduled_day", "no_schedule", "long_shift", "clock_divergence",
                       "device_attested_count", "retry_exhausted", "device_stale", "approver_flag", "unpaired_punch",
-                      "employee_id_asserted", "past_cutoff", "journal_recovery", "late_punch", "entry_rejected"}),
+                      "employee_id_asserted", "past_cutoff", "journal_recovery", "late_punch", "entry_rejected",
+                      "local_clock_mismatch"}),
               one_of("exceptions_state_known", "state", {"open", "resolved", "dismissed"})};
   return t;
 }

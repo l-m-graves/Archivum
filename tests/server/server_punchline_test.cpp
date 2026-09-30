@@ -16,6 +16,7 @@
 
 #include "archivum/core/schema.h"
 #include "archivum/punchline/localtime.h"
+#include "archivum/punchline/tzif.h"
 #include "server_fixture.h"
 #include "test.h"
 
@@ -92,8 +93,6 @@ nlohmann::json punch(int n, int seq, const char* kind, int day, int hour, int mi
   char buf[32];
   std::snprintf(buf, sizeof(buf), "T%02d:%02d:00", hour, minute);
   e["local_time"] = punchline::format_local_day(19786 + day) + buf;
-  e["site_zone"] = "UTC";
-  e["tzdb_version"] = "2024a";
   return e;
 }
 nlohmann::json batch(int n, std::initializer_list<nlohmann::json> entries) {
@@ -138,18 +137,23 @@ ARCHIVUM_TEST(a_setup_people_roles_device_period_and_schedule) {
   g_device_uuid = parse(dev.body)["device_uuid"].get<std::string>();
   // A pay period for the week of 2024-03-04 with cutoffs far in the future.
   auto period = f.post("/api/v1/admin/periods",
-                       nlohmann::json{{"start_day", "2024-03-04"}, {"end_day", "2024-03-10"}, {"site_zone", "UTC"}, {"tzdb_version", "2024a"},
+                       nlohmann::json{{"start_day", "2024-03-04"}, {"end_day", "2024-03-10"}, {"site_zone", "UTC"},
                                       {"submit_by_us", 4'000'000'000LL * kUs}, {"approve_by_us", 4'000'100'000LL * kUs}}
                            .dump(),
                        payroll());
   REQUIRE_MSG(period.status == 201, period.body);
   g_period = parse(period.body)["id"].get<std::int64_t>();
   CHECK(parse(period.body)["start_day"] == "2024-03-04");
+  // The release stamp is the embedded database's, not a request field.
+  CHECK(parse(period.body)["tzdb_version"] == archivum::punchline::tz::release_stamp());
   CHECK(f.post("/api/v1/admin/periods",
-               nlohmann::json{{"start_day", "2024-03-08"}, {"end_day", "2024-03-14"}, {"site_zone", "UTC"}, {"tzdb_version", "2024a"}}.dump(),
+               nlohmann::json{{"start_day", "2024-06-03"}, {"end_day", "2024-06-09"}, {"site_zone", "UTC"}, {"tzdb_version", "2024a"}}.dump(),
+               payroll()).status == 400);
+  CHECK(f.post("/api/v1/admin/periods",
+               nlohmann::json{{"start_day", "2024-03-08"}, {"end_day", "2024-03-14"}, {"site_zone", "UTC"}}.dump(),
                payroll()).status == 409);  // overlap
   CHECK(f.post("/api/v1/admin/periods",
-               nlohmann::json{{"start_day", "2024-03-20"}, {"end_day", "2024-03-14"}, {"site_zone", "UTC"}, {"tzdb_version", "2024a"}}.dump(),
+               nlohmann::json{{"start_day", "2024-03-20"}, {"end_day", "2024-03-14"}, {"site_zone", "UTC"}}.dump(),
                payroll()).status == 409);  // inverted: the engine's same-row check
   // Monday to Friday, 09:00 to 17:00.
   for (int wd = 1; wd <= 5; ++wd) {
@@ -305,8 +309,17 @@ ARCHIVUM_TEST(d_correction_by_the_supervisor_supersedes_the_entry) {
   rd.value().reset();
   REQUIRE(stray != 0);
   nlohmann::json m{{"employee_number", "E0001"}, {"kind", "in"},   {"device_time_us", kMonday + (86400 + 9 * 3600 + 5 * 60) * kUs},
-                   {"local_time", "2024-03-05T09:05:00"}, {"site_zone", "UTC"}, {"tzdb_version", "2024a"},
+                   {"local_time", "2024-03-05T09:05:00"},
                    {"correction_of", stray}, {"reason", "double punch at the door"}};
+  {
+    // Neither the zone nor the release is a request field on a manual entry.
+    nlohmann::json with_zone = m;
+    with_zone["site_zone"] = "UTC";
+    CHECK(f.post("/api/v1/entries/manual", with_zone.dump(), boss()).status == 400);
+    nlohmann::json with_release = m;
+    with_release["tzdb_version"] = "2024a";
+    CHECK(f.post("/api/v1/entries/manual", with_release.dump(), boss()).status == 400);
+  }
   CHECK(f.post("/api/v1/entries/manual", m.dump(), worker()).status == 403);
   auto r = f.post("/api/v1/entries/manual", m.dump(), boss());
   REQUIRE_MSG(r.status == 201, r.body);
@@ -469,7 +482,7 @@ ARCHIVUM_TEST(h_monitor_flags_stale_devices_and_cutoffs) {
   CHECK(audit_count("device.heartbeat") == 1);
   // Escalation: a period past its cutoffs with entries behind.
   auto period = f.post("/api/v1/admin/periods",
-                       nlohmann::json{{"start_day", "2024-03-11"}, {"end_day", "2024-03-17"}, {"site_zone", "UTC"}, {"tzdb_version", "2024a"},
+                       nlohmann::json{{"start_day", "2024-03-11"}, {"end_day", "2024-03-17"}, {"site_zone", "UTC"},
                                       {"submit_by_us", 1}, {"approve_by_us", 2}}
                            .dump(),
                        payroll());

@@ -110,6 +110,34 @@ v1 ships when all of these hold. They are the pilot gates from
 - Integrity check scheduled and alerting.
 - IT handbook complete, including the accepted revocation-latency bound.
 
+### Where each gate is proved
+
+Two repositories, two workflows. A gate is **proved in CI** only when the
+named job ran the named check and was green on the named run; "local only"
+means it passed on one machine and is not a gate; "unverified in CI" means
+the step exists but has not run. Status as of 2026-09-30, Archivum
+[run 36](https://github.com/l-m-graves/Archivum/actions/runs/36460191920)
+(`ci.yml`) and Punchline
+[run 14](https://github.com/l-m-graves/Punchline/actions/runs/36460125747)
+(`client.yml`). Every place a job can be green without having run its
+check is listed, with its condition, in the Stage 6 report, section 12.
+
+| Gate | Proved by (repo · workflow · job: check) | Status |
+|---|---|---|
+| Crash, model, randomized and concurrency suites, both platforms | Archivum · `ci.yml` · linux-debug, linux-release, linux-tsan (only tests labelled `concurrency`), windows-debug, windows-release: `ctest`. Punchline · `client.yml` · windows-msvc (Debug only), linux-gcc-sanitizers, linux-gcc-release: journal and sync crash suites | Proved in CI. "The exact Windows build being deployed" is not yet a thing: there is no installer until Stage 11, and the client's Windows job builds Debug only |
+| Backups and archived logs off host; restore-and-verify | Archivum · `ci.yml` · every job except tsan runs `cli_test` (backup, restore, verify round trip); `server_archive_test`, `backup_test` in all five | Proved in CI for synthetic data. Against a real backup of pilot data: not possible yet |
+| Contract suite identical, FastAPI and Archivum | Archivum side: Archivum · `ci.yml` · every job: `server_contract_test`. FastAPI side: Archivum · `ci.yml` · contract-fastapi: `pytest tests/contract` | Archivum side proved in CI. **FastAPI side unverified in CI**: the job skipped for want of `PUNCHLINE_REPO_TOKEN` and reported green (run 36). Now fails without the token. Last passed locally |
+| Every endpoint rejects an employee ID in the request body | Archivum · `ci.yml` · `server_punchline_test` (`g_employee_id_from_a_device_is_a_tamper_signal`, employee create), `server_contract_test` | **Partly proved.** The refusal is structural (every route parses its body through one function) and tested on the sync route and on employee creation; no test sweeps the route table, so a route that bypassed the parser would not be caught |
+| The rewritten client against Archivum | Archivum · `ci.yml` · linux-release: end-to-end step (`tests/e2e/client_e2e.sh`, builds `punchline-cli` from the Punchline repository's branch) | **Unverified in CI** until the secret is present; passed locally at two commits. Runs on Linux with the OpenSSL transport and an unprotected credential file, not the shipped WinHTTP and DPAPI stack |
+| Day assignment from the instant and the site zone, never the device's clock | Archivum · `ci.yml`: `punchline_sync_test` (stamps), `tzif_test`, `tzcheck_synthetic_*`, `tzdata_generate_test` (non-Windows only) | **Not met.** Day assignment still reads the device's `local_time`; the switch commit waits on the tzdata and tzcode files. `tzcheck` passes with no database embedded (`ARCHIVUM_TZDATA_ALLOW_EMPTY` defaults ON). What is met: the zone and release stamped on every entry and period are the server's, never a request's |
+| Rollback rehearsed with the reverse export | Archivum · `ci.yml`: `punchline_sync_test`, `cli_test` (export); contract-fastapi: `tests/contract/test_rollback.py` (replay into FastAPI) | Export proved in CI. Replay into FastAPI **unverified in CI** (same token). Rehearsal on real pilot data, and "the old server able to resume": not possible yet |
+| No shared token anywhere; every device enrolled individually; revocation end to end | Archivum · `ci.yml`: `server_core_test`, `server_punchline_test`, `server_contract_test` (enroll, refuse, revoke). End to end with the real client: the end-to-end step, step 5 | Server side proved in CI. Client side unverified in CI. **Not met until cutover**: the prototype client in the Punchline repository's root still carries the shared token |
+| Audit trail for every mutating endpoint and lifecycle transition; period audit report | Archivum · `ci.yml`: `server_punchline_test` (`audit_count` for sync.batch, period.lock, period.release, entry.correct, exception.dismiss, supervisor.assign, approver.flag, device.heartbeat, device.tamper_signal; the report itself) | **Partly proved.** Those actions are asserted; no test enumerates the routes to show none is missing |
+| Segregation-of-duties report | Archivum · `ci.yml`: `server_punchline_test` (`/api/v1/admin/roles/conflicts`) | Proved in CI |
+| Certificate expiry in health; archive check; break-glass exercised | Archivum · `ci.yml`: `server_integration_test`, `server_core_test`, `core_test` | Proved in CI |
+| Integrity check scheduled and alerting | none | Not built (Stage 11) |
+| IT handbook complete, revocation-latency bound | `docs/handbook.md` | Seed only (Stage 11) |
+
 **v1 closes**, as distinct from ships, when the FastAPI cutover is complete
 and the old store is retired at the end of the defined rollback window.
 

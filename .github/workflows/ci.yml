@@ -94,8 +94,8 @@ jobs:
         run: ctest --preset ${{ matrix.preset }}
 
       - name: The rewritten Punchline client against this build, end to end (Stage 6-C gate)
-        # Token-gated like contract-fastapi: the client lives in the Punchline
-        # repository. Builds punchline-cli (the sync layer from a console, with
+        # Token-gated like contract-fastapi, and like it a missing token FAILS
+        # the step: the client lives in the Punchline repository. Builds punchline-cli (the sync layer from a console, with
         # the OpenSSL transport) and runs tests/e2e/client_e2e.sh against
         # tests/e2e/e2e_server. PUNCHLINE_CLIENT_REF moves to main once the
         # client branch is merged there.
@@ -105,8 +105,8 @@ jobs:
           PUNCHLINE_CLIENT_REF: claude/stage-6c-sync-layer
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "PUNCHLINE_REPO_TOKEN is not set: skipping the end-to-end client run"
-            exit 0
+            echo "::error title=Gate not run::PUNCHLINE_REPO_TOKEN is not set, so the rewritten client was NOT run against this build. This gate does not skip: add the secret (fine-grained read-only token for the Punchline repository's contents)."
+            exit 1
           fi
           apt-get install -y --no-install-recommends libsodium-dev libssl-dev
           git clone --depth 1 --branch "$PUNCHLINE_CLIENT_REF" "https://x-access-token:${TOKEN}@github.com/l-m-graves/Punchline.git" /tmp/punchline
@@ -183,8 +183,8 @@ jobs:
           TOKEN: ${{ secrets.PUNCHLINE_REPO_TOKEN }}
         run: |
           if [ -z "$TOKEN" ]; then
-            echo "PUNCHLINE_REPO_TOKEN is not set: skipping the FastAPI run (the Archivum runner is in the Linux jobs)"
-            exit 0
+            echo "::error title=Gate not run::PUNCHLINE_REPO_TOKEN is not set, so the contract suite was NOT run against the FastAPI prototype. This gate does not skip: add the secret (fine-grained read-only token for the Punchline repository's contents)."
+            exit 1
           fi
           git clone --depth 1 "https://x-access-token:${TOKEN}@github.com/l-m-graves/Punchline.git" /tmp/punchline
           python3 -m pip install --quiet -r /tmp/punchline/backend/requirements-dev.txt

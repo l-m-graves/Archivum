@@ -480,10 +480,10 @@ client_e2e: PASS
 was refused by Archivum: "tzdb_version is required". The sync path
 required a release name from the device, while the ruling says the
 release is the server's and a client's opinion of it is ignored. Fixed
-on the server: `site_zone` and `tzdb_version` are optional from a device;
-an entry without them takes the employee record's zone and the embedded
-database's release (`sync_fills_site_zone_and_release_when_the_device_sends_none`).
-The contract doc is corrected. This is the kind of disagreement the
+on the server: `site_zone` and `tzdb_version` were made optional from a
+device, and an entry without them took the employee record's zone and the
+embedded release. That fix was wrong in one respect and is corrected in
+section 12: it still stored a device's value when one was sent. The contract doc is corrected. This is the kind of disagreement the
 end-to-end gate exists to find, and it was not visible from either
 side's own tests.
 
@@ -548,4 +548,97 @@ directly or only from the period screen (my proposal: only from the
 period screen, so the approval trail has one entry point); and the CSV
 export's exact column set for the payroll system, which section 11's
 answer on pay codes decides.
+
+## 12. Fourth rulings (2026-09-30): zone authority, gates that cannot skip
+
+### The site zone and the release stamp: what the code did, and what it does now
+
+You asked for what the code does, not what it should. Before this
+change, on the day-assignment path and the stamps:
+
+| Question | The code before this change |
+|---|---|
+| Where did the day assignment's local day come from? | The `local_time` string the **device** sent. The site zone was not consulted at all: `period_for_day`, the schedule checks and the pairing's local day all read it. This is the device-clock problem itself and is the switch commit's job; it is not fixed by this change |
+| Which `site_zone` was stored on a synced entry? | **The device's, when it sent one**; the employee record's only when the field was absent. Last session's fix did exactly the thing you describe: the device became a source of truth whenever it spoke |
+| Which `tzdb_version` was stored on a synced entry? | **The device's, when it sent one**; the embedded database's only when absent |
+| Manual entries and pay periods | Both required `site_zone` and `tzdb_version` from the **request body** (a supervisor's or payroll's, not a device's) and stored them as given; the period's `tzdb_version` likewise |
+| Was a device's zone ever compared? | No. `local_clock_mismatch` did not exist in the schema at all, only in the design text |
+
+What it does now (commit follows this section):
+
+- **Synced entry**: `site_zone` is the employee record's and `tzdb_version`
+  is `release_stamp()` (the embedded release, or the literal `unavailable`
+  when none is embedded), always. A device-supplied `tzdb_version` is
+  discarded. A device-supplied `site_zone` is compared with the employee
+  record's: a difference opens `local_clock_mismatch` naming both values
+  and stores nothing from the device; a later batch whose claim agrees
+  closes it. Both keys are still accepted on the wire, as tolerance, and
+  have no other effect. `local_clock_mismatch` is now a known exception
+  kind.
+- **Manual entry**: `site_zone` and `tzdb_version` are no longer request
+  fields (400 by name); the zone is the employee record's and the release
+  is the embedded one.
+- **Pay period**: `tzdb_version` is no longer a request field; the
+  period's `site_zone` is still an administrator's setting (it is the
+  site's own record, not a device's claim), and the release is stamped.
+- Tests: `sync_stamps_zone_and_release_from_the_server_never_from_the_device`
+  (no claim; a disagreeing zone with a made-up release, both discarded and
+  the mismatch raised once; an agreeing claim closes it), and the route
+  refusals in `server_punchline_test`. The end-to-end run, whose client
+  sends its heartbeat's zone, still passes and raises nothing.
+- **Still the device's, until the switch commit**: the local day. So the
+  stamp is now trustworthy and the day assignment under it is not. The
+  switch changes where the local day comes from and nothing else.
+- An unset employee zone cannot occur: `site_zone` is required and
+  non-empty on every employee (schema check and route). There is no
+  fallback to a device value anywhere.
+
+### Gates that do not skip
+
+- Both token-gated steps (contract-fastapi, and the end-to-end step in
+  linux-release) now **fail** when `PUNCHLINE_REPO_TOKEN` is empty, with an
+  error annotation saying the gate was not run. Whether the secret is
+  present on the repository is something I cannot read from here; the next
+  run answers it, and a failure on "Gate not run" means it is not there
+  yet.
+- The contract pytest modules now raise, rather than skip, when
+  `PUNCHLINE_REPO` is unset and `CI` is set. A local run without it still
+  skips.
+- The v1 gate list in `docs/plan-v1.md` now has a table saying, for each
+  gate, the repository, workflow and job that proves it and whether it has
+  run. The two token-gated gates are recorded **unverified in CI**, not
+  passing.
+
+### Every place CI can be green without having run the check
+
+Archivum, `ci.yml`:
+
+| Where | Condition | What is not run while green |
+|---|---|---|
+| contract-fastapi, end-to-end step | token empty | **Fixed**: fails. Was: exit 0 |
+| End-to-end step | `if: matrix.preset == 'linux-release'` | Absent from linux-debug, linux-tsan and both Windows jobs, by design: one Linux run is the gate |
+| `tzcheck` after every build | `ARCHIVUM_TZDATA_ALLOW_EMPTY` defaults ON (`modules/punchline/CMakeLists.txt`) | With no database embedded it prints that none is embedded and exits 0, in every job. The embedded-release check and every pinned transition are skipped until the switch commit turns this OFF |
+| `tzdata_generate_test` | `if(NOT WIN32)` | Not run on windows-debug or windows-release. On Linux it needs `sh`, `python3`, `gpg`, `make`; a missing `gpg` fails it (it named the failure in run 35) |
+| linux-tsan | test preset filter `label: concurrency` | Only `db_test`, `store_test`, `backup_test`, `concurrency_test` and the server tests run under ThreadSanitizer; `cli_test`, the crash tests, the tz tests and the rules and sync unit tests do not |
+| Crash and model tests | `ARCHIVUM_CRASH_ITERS`: 1000 debug, 200 tsan, 10000 release | The large counts run only in linux-release. Windows uses its own default |
+| Contract pytest modules | `PUNCHLINE_REPO` unset | **Fixed in CI**: raises when `CI` is set. A local run skips |
+| vcpkg binary cache save | `if: always() && cache-hit != 'true'` | Skipped on a cache hit; not a check |
+
+Punchline, `client.yml` (the only workflow in that repository):
+
+| Where | Condition | What is not run while green |
+|---|---|---|
+| Workflow trigger | `paths: client/**` and the workflow file | Nothing runs for a change to `backend/` or to the prototype in the root. **No workflow in the Punchline repository runs the FastAPI backend's own tests (`backend/tests`) or builds the prototype.** The backend is exercised only by Archivum's contract-fastapi job |
+| windows-msvc | `build: --config Debug`, `test: -C Debug` | No Release build of the client on Windows and no sanitizers there; Release runs on Linux only |
+| `WinHttpTransport`, the Win32 app (`client/app`) | Windows-only sources | **Compiled by windows-msvc, never exercised by any test.** The only transport any test runs is the fake server model and, in the end-to-end step, the OpenSSL one |
+| DPAPI store | `#ifdef _WIN32` in `test_verify.cpp` | Tested on Windows only, and only on its own; the enrollment record's round trip is tested on `MemorySecretStore`, so enrollment under DPAPI is untested anywhere |
+| `punchline_verify`, `punchline_sync`, `punchline-cli` targets | `return()` when libsodium is absent (CMake) | CI sets `PUNCHLINE_REQUIRE_SODIUM=ON`, which makes absence a configure error, not a skip. A local build without libsodium skips them silently |
+| OpenSSL transport | `find_package(OpenSSL QUIET)` | Missing OpenSSL on Linux breaks the CLI's compile rather than skipping it; CI installs `libssl-dev` |
+| Longer crash runs | one seed per run, 20,000 operations | The eight seeds under ctest run fewer operations each; only one seed runs long |
+
+The two things in this list I would act on beyond the fixes above, each
+yours to decide: the Punchline repository needs a workflow that runs
+`backend/tests` (I have not added one), and the tzcheck allow-empty default
+should flip to OFF in CI the moment the database is embedded, which the
+switch commit does.
 

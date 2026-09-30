@@ -24,6 +24,10 @@ import pytest
 HERE = Path(__file__).resolve().parent
 REPO = os.environ.get("PUNCHLINE_REPO", "")
 if not REPO:
+    if os.environ.get("CI"):
+        # A skipped module is a green run that ran nothing. In CI that is a
+        # failure: the workflow sets PUNCHLINE_REPO, so its absence is a bug.
+        raise RuntimeError("PUNCHLINE_REPO is not set in CI: the contract suite did not run")
     pytest.skip("PUNCHLINE_REPO not set: the Punchline repository holds the FastAPI backend", allow_module_level=True)
 sys.path.insert(0, str(Path(REPO) / "backend"))
 

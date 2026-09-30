@@ -32,6 +32,7 @@
 #include "archivum/punchline/rules.h"
 #include "archivum/punchline/schema.h"
 #include "archivum/punchline/sync.h"
+#include "archivum/punchline/tzif.h"
 #include "archivum/server/app.h"
 #include "archivum/server/modules.h"
 #include "punchline_module.h"
@@ -782,7 +783,7 @@ void PunchlineModule::register_routes(App& app_ref) {
           for (const auto& r : rows.value()) list.push_back(period_json(punchline::PayPeriod::from_row(r)));
           co_return ok_response({{"periods", list}}, request_id);
         }
-        auto body = parse_body(req, {"start_day", "end_day", "site_zone", "tzdb_version", "submit_by_us", "approve_by_us"});
+        auto body = parse_body(req, {"start_day", "end_day", "site_zone", "submit_by_us", "approve_by_us"});
         if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "periods.create");
         auto who = co_await self->authenticator().authenticate(req, request_id);
         if (!who.ok()) co_return auth_error(who, request_id, "periods.create");
@@ -792,10 +793,9 @@ void PunchlineModule::register_routes(App& app_ref) {
         auto start = body_string(body.value(), "start_day");
         auto end = body_string(body.value(), "end_day");
         auto zone = body_string(body.value(), "site_zone");
-        auto tz = body_string(body.value(), "tzdb_version");
         auto submit_by = body_int(body.value(), "submit_by_us", false);
         auto approve_by = body_int(body.value(), "approve_by_us", false);
-        for (const Status& s : {start.status(), end.status(), zone.status(), tz.status(), submit_by.status(), approve_by.status()}) {
+        for (const Status& s : {start.status(), end.status(), zone.status(), submit_by.status(), approve_by.status()}) {
           if (!s.ok()) co_return status_response(s, request_id);
         }
         auto sd = punchline::parse_local_time(start.value() + "T00:00:00");
@@ -821,7 +821,7 @@ void PunchlineModule::register_routes(App& app_ref) {
         p.start_day = sd.value().local_day;
         p.end_day = ed.value().local_day;
         p.site_zone = zone.value();
-        p.tzdb_version = tz.value();
+        p.tzdb_version = punchline::tz::release_stamp();  // the embedded database's, never the request's
         p.submit_by = submit_by.value();
         p.approve_by = approve_by.value();
         if (Status s = rec.insert("pay_periods", p.to_row()); !s.ok()) co_return status_response(s, request_id);
@@ -939,7 +939,7 @@ void PunchlineModule::register_routes(App& app_ref) {
       "/api/v1/entries/manual",
       [self, mod](drogon::HttpRequestPtr req) -> Handler {
         const std::string request_id = new_request_id();
-        auto body = parse_body(req, {"employee_number", "kind", "device_time_us", "local_time", "site_zone", "tzdb_version", "pay_code", "note",
+        auto body = parse_body(req, {"employee_number", "kind", "device_time_us", "local_time", "pay_code", "note",
                                      "correction_of", "reason"});
         if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "entries.manual");
         auto who = co_await self->authenticator().authenticate(req, request_id);
@@ -949,13 +949,11 @@ void PunchlineModule::register_routes(App& app_ref) {
         auto kind = body_string(body.value(), "kind");
         auto at = body_int(body.value(), "device_time_us");
         auto local = body_string(body.value(), "local_time");
-        auto zone = body_string(body.value(), "site_zone");
-        auto tz = body_string(body.value(), "tzdb_version");
         auto code = body_string(body.value(), "pay_code", false);
         auto note = body_string(body.value(), "note", false);
         auto correction_of = body_int(body.value(), "correction_of", false);
         auto reason = body_string(body.value(), "reason");
-        for (const Status& s : {number.status(), kind.status(), at.status(), local.status(), zone.status(), tz.status(), code.status(),
+        for (const Status& s : {number.status(), kind.status(), at.status(), local.status(), code.status(),
                                 note.status(), correction_of.status(), reason.status()}) {
           if (!s.ok()) co_return status_response(s, request_id);
         }
@@ -977,8 +975,6 @@ void PunchlineModule::register_routes(App& app_ref) {
         m.kind = kind.value();
         m.device_time_us = at.value();
         m.local_time = local.value();
-        m.site_zone = zone.value();
-        m.tzdb_version = tz.value();
         m.pay_code = code.value();
         m.note = note.value();
         m.correction_of = correction_of.value();

@@ -216,37 +216,72 @@ ARCHIVUM_TEST(sync_accepts_pairs_and_is_idempotent) {
   CHECK(d.value()->last_acked_sequence == 2 && d.value()->last_seen_at == w.now && d.value()->last_journal_id.value() == uid(500));
 }
 
-ARCHIVUM_TEST(sync_fills_site_zone_and_release_when_the_device_sends_none) {
-  // The rewritten client (Stage 6-C) sends no tzdb_version and, before its
-  // first heartbeat, no site_zone: both are the server's to fill in.
+ARCHIVUM_TEST(sync_stamps_zone_and_release_from_the_server_never_from_the_device) {
+  // site_zone is the employee record's and tzdb_version is the embedded
+  // database's, whatever the device sends. A device's zone claim is only
+  // compared: a disagreement opens local_clock_mismatch, an agreement
+  // closes it, and neither changes what is stored.
   World w;
   w.open();
-  IncomingBatch b;
-  b.batch_uuid = uid(150);
-  b.journal_id = uid(550);
-  IncomingEntry in = w.punch(1, 1, "in", 0, 9);
-  in.site_zone.clear();
-  in.tzdb_version.clear();
-  IncomingEntry out = w.punch(2, 2, "out", 0, 17);
-  out.site_zone = "Europe/London";  // a device may send one; it is kept as sent
-  out.tzdb_version.clear();
-  b.entries = {in, out};
-  auto o = w.sync(b);
-  REQUIRE_OK(o.status());
-  CHECK(o.value().accepted == 2 && o.value().rejected == 0);
-  auto rd = w.store->begin_read();
-  REQUIRE_OK(rd.status());
-  auto e1 = entry_by_uuid(*rd.value(), in.entry_uuid);
-  auto e2 = entry_by_uuid(*rd.value(), out.entry_uuid);
-  REQUIRE_OK(e1.status());
-  REQUIRE_OK(e2.status());
-  REQUIRE(e1.value().has_value() && e2.value().has_value());
-  CHECK(e1.value()->site_zone == "UTC");  // the employee record's
-  CHECK(e2.value()->site_zone == "Europe/London");
-  const auto release = tz::database_version();
-  const std::string expected = release.ok() ? release.value() : "";
-  CHECK(e1.value()->tzdb_version == expected);
-  CHECK(e2.value()->tzdb_version == expected);
+  const std::string expected = tz::release_stamp();
+  const auto stored = [&](const IncomingEntry& in) {
+    auto rd = w.store->begin_read();
+    REQUIRE_OK(rd.status());
+    auto e = entry_by_uuid(*rd.value(), in.entry_uuid);
+    REQUIRE_OK(e.status());
+    REQUIRE(e.value().has_value());
+    return *e.value();
+  };
+  const auto open_mismatches = [&]() {
+    auto rd = w.store->begin_read();
+    REQUIRE_OK(rd.status());
+    auto open = open_exceptions(*rd.value(), {}, "local_clock_mismatch");
+    REQUIRE_OK(open.status());
+    return open.value();
+  };
+
+  // 1. No claims at all: both stamps are the server's; nothing is raised.
+  IncomingBatch b1;
+  b1.batch_uuid = uid(150);
+  b1.journal_id = uid(550);
+  IncomingEntry a = w.punch(1, 1, "in", 0, 9);
+  a.site_zone.clear();
+  a.tzdb_version.clear();
+  b1.entries = {a};
+  REQUIRE_OK(w.sync(b1).status());
+  CHECK(stored(a).site_zone == "UTC" && stored(a).tzdb_version == expected);
+  CHECK(open_mismatches().empty());
+
+  // 2. A claim that disagrees, and a made-up release: both discarded, the
+  //    disagreement raised once and naming both values.
+  IncomingBatch b2;
+  b2.batch_uuid = uid(151);
+  b2.journal_id = uid(550);
+  IncomingEntry bad = w.punch(2, 2, "out", 0, 17);
+  bad.site_zone = "Europe/London";
+  bad.tzdb_version = "1999z";
+  IncomingEntry bad2 = w.punch(3, 3, "in", 1, 9);
+  bad2.site_zone = "Europe/London";
+  b2.entries = {bad, bad2};
+  auto o2 = w.sync(b2);
+  REQUIRE_OK(o2.status());
+  CHECK(o2.value().accepted == 2);
+  CHECK(stored(bad).site_zone == "UTC" && stored(bad).tzdb_version == expected);
+  CHECK(stored(bad2).site_zone == "UTC" && stored(bad2).tzdb_version == expected);
+  const auto raised = open_mismatches();
+  REQUIRE(raised.size() == 1);
+  CHECK(raised[0].detail.find("Europe/London") != std::string::npos && raised[0].detail.find("'UTC'") != std::string::npos);
+
+  // 3. A later batch whose claim agrees closes it.
+  IncomingBatch b3;
+  b3.batch_uuid = uid(152);
+  b3.journal_id = uid(550);
+  IncomingEntry good = w.punch(4, 4, "out", 1, 17);
+  good.site_zone = "UTC";
+  b3.entries = {good};
+  REQUIRE_OK(w.sync(b3).status());
+  CHECK(open_mismatches().empty());
+  CHECK(stored(good).site_zone == "UTC");
 }
 
 ARCHIVUM_TEST(sync_rejects_per_entry_and_flags_the_exception_queue) {
@@ -337,8 +372,6 @@ ARCHIVUM_TEST(correction_supersedes_and_repairs_pairing) {
   m.kind = "in";
   m.device_time_us = kMonday + (9 * 3600 + 7 * 60) * kUs;
   m.local_time = "2024-03-04T09:07:00";
-  m.site_zone = "UTC";
-  m.tzdb_version = "2024a";
   m.correction_of = 1;
   m.reason = "double punch at the door";
   TimeEntry created;

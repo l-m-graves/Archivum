@@ -55,12 +55,23 @@ actor the device). Rules:
   cannot be attributed to an entry (not an object, `entries` not an
   array) refuses the request, and a batch over `max_batch_entries` is 413
   before anything is looked at.
-- **`site_zone` and `tzdb_version` are the server's to fill.** The
-  rewritten client (Stage 6-C) sends the site zone only as the last
-  heartbeat told it and never sends a release name; an entry without them
-  takes the employee record's zone and the embedded database's release.
-  Found by the end-to-end run, not assumed: the first real batch from the
-  rewritten client was refused for a missing `tzdb_version`.
+- **`site_zone` and `tzdb_version` are the server's, never the
+  device's.** Both are accepted on the wire as tolerance (the rewritten
+  client sends the zone it last heard at a heartbeat and never a release
+  name) and neither is ever stored or used. The entry's `site_zone` is the
+  employee record's, always; its `tzdb_version` is the embedded database's
+  release, always (`release_stamp()`: the literal `unavailable` when no
+  database is embedded, so a stamp never reads as a release it is not).
+  A device's zone claim is compared: a claim that differs from the
+  employee's record opens `local_clock_mismatch` naming both values (one
+  open item per device and employee), and a later batch whose claim agrees
+  closes it. The same holds off the device path: a manual entry and a pay
+  period refuse `site_zone` (manual entry) and `tzdb_version` (both) as
+  request fields with 400, and stamp from the same two sources. Found by
+  the end-to-end run, which first showed the sync path demanding a release
+  name from the device, and then corrected again on review: the first fix
+  stored a device's value when one was sent, which made the device a
+  source of truth; it no longer does.
 - Every accepted punch is `attestation: device`, `state: recorded`,
   stamped with the server's receipt time and the batch's clock divergence,
   and assigned to the pay period containing its local day (PL-3), or to
@@ -136,7 +147,12 @@ and pinned by zdump, `tests/tzdata/`). The IANA release itself has not
 arrived (the attachment did not reach the repository), so the binary
 still carries the placeholder, `tzcheck` reports it, and the sync path
 has **not** been switched: it still takes the device's wall clock for day
-assignment. Switching it is the commit that lands with the release
+assignment, which is the device-clock problem this design exists to remove:
+`period_for_day`, the schedule checks and the pairing's local day all read
+the `local_time` string the device sent, and the site zone is not consulted
+for any of them. What is already server-only is the stamp on every entry
+(zone from the employee record, release from the embedded database), so the
+switch changes where the local day comes from and nothing else. Switching it is the commit that lands with the release
 tarball; no payroll export may run on real data before that. The
 `localtime.h` calendar arithmetic (proleptic Gregorian, Sunday-based
 weekdays) stays as the day and minute helpers under the zone
@@ -236,6 +252,7 @@ action that produced them. Kinds:
 | `past_cutoff` | the monitor after a cutoff; sync for a locked period | approval, or a person |
 | `late_punch` | sync, when a punch lands in a period where the employee's entries are already submitted or approved | approval of that employee's period, or a person |
 | `entry_rejected` | sync, when any entry of a batch is refused; one open item per device holding the current list, replaced when the list changes, so a client resending a refused entry never duplicates it | the next batch with nothing refused does not close it (the refused entries are still on the device); a person does, once the device is fixed |
+| `local_clock_mismatch` | sync, when a device reports a site zone other than the employee record's (the server's record was used). The comparison of the device's `local_time` with the server's own computation joins it with the switch commit | a later batch whose zone claim agrees, or a person |
 | `approver_flag` | `POST /api/v1/me/flag` | a person |
 
 `GET /api/v1/exceptions?kind=` lists open items in the caller's scope:

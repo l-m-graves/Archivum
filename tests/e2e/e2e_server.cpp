@@ -37,8 +37,7 @@ int main() {
   auto period = f.post("/api/v1/admin/periods",
                        nlohmann::json{{"start_day", punchline::format_local_day(today - 30)},
                                       {"end_day", punchline::format_local_day(today + 30)},
-                                      {"site_zone", "America/Los_Angeles"},
-                                      {"tzdb_version", "placeholder"}}
+                                      {"site_zone", "America/Los_Angeles"}}
                            .dump(),
                        admin);
   if (period.status != 201) {

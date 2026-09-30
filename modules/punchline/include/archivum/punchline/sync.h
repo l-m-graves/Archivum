@@ -34,6 +34,9 @@ struct IncomingEntry {
   std::string kind;  // in | out
   std::int64_t device_time_us = 0;
   std::string local_time;  // YYYY-MM-DDTHH:MM:SS
+  // Wire tolerance only: site_zone is compared with the employee record's
+  // (a disagreement opens local_clock_mismatch) and tzdb_version is
+  // discarded. Neither is ever stored or used.
   std::string site_zone, tzdb_version;
   std::string pay_code;  // optional
   std::string note;      // optional
@@ -81,7 +84,7 @@ struct ManualEntry {
   std::int64_t employee_id = 0;
   std::string kind;
   std::int64_t device_time_us = 0;
-  std::string local_time, site_zone, tzdb_version, pay_code, note;
+  std::string local_time, pay_code, note;  // zone and release are the server's (employee record, embedded database)
   std::int64_t correction_of = 0;
   std::string reason;
 };

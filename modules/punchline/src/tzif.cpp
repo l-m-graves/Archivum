@@ -405,4 +405,9 @@ Result<std::string> database_version() {
   return std::string(db.version);
 }
 
+std::string release_stamp() {
+  auto v = database_version();
+  return v.ok() ? v.value() : std::string("unavailable");
+}
+
 }  // namespace archivum::punchline::tz

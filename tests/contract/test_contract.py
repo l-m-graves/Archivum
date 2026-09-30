@@ -23,6 +23,10 @@ SCENARIOS = json.loads((HERE / "scenarios.json").read_text(encoding="utf-8"))["s
 
 REPO = os.environ.get("PUNCHLINE_REPO", "")
 if not REPO:
+    if os.environ.get("CI"):
+        # A skipped module is a green run that ran nothing. In CI that is a
+        # failure: the workflow sets PUNCHLINE_REPO, so its absence is a bug.
+        raise RuntimeError("PUNCHLINE_REPO is not set in CI: the contract suite did not run")
     pytest.skip("PUNCHLINE_REPO not set: the Punchline repository holds the FastAPI backend", allow_module_level=True)
 BACKEND = Path(REPO) / "backend"
 sys.path.insert(0, str(BACKEND))

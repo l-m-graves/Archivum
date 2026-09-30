@@ -320,8 +320,7 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
   if (!employee.ok()) return employee.status();
   if (!employee.value().has_value()) return Status::not_found("the device's employee does not exist");
   const std::string employee_zone = employee.value()->site_zone;
-  const auto release = tz::database_version();
-  const std::string embedded_release = release.ok() ? release.value() : "";
+  const std::string embedded_release = tz::release_stamp();
   if (batch.client_time_us != 0) {
     out.clock_divergence_us = now_us - batch.client_time_us;
     const std::int64_t tol = cfg.clock_divergence_tolerance_seconds * 1'000'000;
@@ -358,7 +357,19 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
     period_settled[period_id] = any;
     return any;
   };
+  // A device's zone claim (its last heartbeat's answer) is compared with
+  // the server's record and is otherwise ignored; it decides nothing.
+  bool zone_disagrees = false, zone_agrees = false;
+  std::string zone_claimed;
   for (const IncomingEntry& in : entries) {
+    if (!in.site_zone.empty()) {
+      if (in.site_zone != employee_zone) {
+        zone_disagrees = true;
+        if (zone_claimed.empty()) zone_claimed = in.site_zone.substr(0, 64);
+      } else {
+        zone_agrees = true;
+      }
+    }
     EntryOutcome oc;
     oc.entry_uuid = in.entry_uuid;
     oc.journal_sequence = in.journal_sequence;
@@ -436,8 +447,11 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
     e.kind = in.kind;
     e.device_time = in.device_time_us;
     e.local_time = in.local_time;
-    e.site_zone = in.site_zone.empty() ? employee_zone : in.site_zone;
-    e.tzdb_version = in.tzdb_version.empty() ? embedded_release : in.tzdb_version;
+    // Both are the server's, never the request's: the zone is the employee
+    // record's, the release is the embedded database's. What the device
+    // sent is compared below and otherwise ignored.
+    e.site_zone = employee_zone;
+    e.tzdb_version = embedded_release;
     e.receipt_time = now_us;
     e.attestation = "device";
     e.clock_divergence_us = out.clock_divergence_us;
@@ -487,6 +501,23 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
   }
   for (std::int64_t period : periods_touched) {
     if (Status s = count_device_attested(rec, cfg, device.employee_id, period, now_us, &out.exceptions_opened); !s.ok()) return s;
+  }
+  {
+    ExceptionKey key;
+    key.kind = "local_clock_mismatch";
+    key.device_id = device.id;
+    key.employee_id = device.employee_id;
+    if (zone_disagrees) {
+      auto o = open_exception(rec, key,
+                              "device reports site zone '" + zone_claimed + "', the server's record for the employee is '" + employee_zone +
+                                  "'; the server's record was used",
+                              now_us);
+      if (!o.ok()) return o.status();
+      note_opened(&out.exceptions_opened, o.value());
+    } else if (zone_agrees) {
+      auto r = resolve_matching(rec, key, "device agreed with the server's site zone", now_us);
+      if (!r.ok()) return r.status();
+    }
   }
   // Refused entries are per entry (the rest of the batch stands) and are
   // surfaced: the client will resend them, and a permanent refusal must
@@ -571,7 +602,6 @@ Result<TimeEntry> record_manual_entry(core::Recorder& rec, const Config& cfg, co
   if (m.device_time_us <= 0) return Status::invalid_argument("device_time_us must be positive");
   auto lt = parse_local_time(m.local_time);
   if (!lt.ok()) return lt.status();
-  if (m.site_zone.empty() || m.tzdb_version.empty()) return Status::invalid_argument("site_zone and tzdb_version are required");
   if (m.reason.empty()) return Status::constraint("PL-4: a manual entry needs a reason");
   auto emp = employee_by_id(w, m.employee_id);
   if (!emp.ok()) return emp.status();
@@ -626,8 +656,8 @@ Result<TimeEntry> record_manual_entry(core::Recorder& rec, const Config& cfg, co
   e.kind = m.kind;
   e.device_time = m.device_time_us;
   e.local_time = m.local_time;
-  e.site_zone = m.site_zone;
-  e.tzdb_version = m.tzdb_version;
+  e.site_zone = emp.value()->site_zone;  // the employee record's, never the request's
+  e.tzdb_version = tz::release_stamp();
   e.receipt_time = now_us;
   e.attestation = "manual";
   e.period_id = period.value() ? period.value()->id : 0;

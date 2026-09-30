@@ -82,8 +82,6 @@ std::vector<nlohmann::json> wire_entry(const nlohmann::json& abstract, int& seq,
     char buf[32];
     std::snprintf(buf, sizeof(buf), "2024-03-%02dT%02d:%02d:00", 4 + id, (minute_of_day / 60) % 24, minute_of_day % 60);
     e["local_time"] = buf;
-    e["site_zone"] = "UTC";
-    e["tzdb_version"] = "2024a";
     if (abstract.value("assert_employee_id", false)) e["employee_id"] = "E0001";
     return e;
   };
@@ -122,7 +120,7 @@ ARCHIVUM_TEST(contract_scenarios_hold_on_archivum) {
   REQUIRE_MSG(doc.is_object() && doc.contains("scenarios"), "set ARCHIVUM_SOURCE_DIR to the repository root");
   // A period covering every day the scenarios use, and the device.
   REQUIRE(f.post("/api/v1/admin/periods",
-                 nlohmann::json{{"start_day", "2024-03-04"}, {"end_day", "2024-03-31"}, {"site_zone", "UTC"}, {"tzdb_version", "2024a"}}.dump(),
+                 nlohmann::json{{"start_day", "2024-03-04"}, {"end_day", "2024-03-31"}, {"site_zone", "UTC"}}.dump(),
                  admin_bearer()).status == 201);
   int scenario_no = 0;
   for (const nlohmann::json& scenario : doc["scenarios"]) {

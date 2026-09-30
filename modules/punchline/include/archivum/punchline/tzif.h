@@ -100,4 +100,10 @@ Result<Zone> zone(const std::string& name);
 // The embedded release name, or an error when none is embedded.
 Result<std::string> database_version();
 
+// The value stamped into every entry and period as `tzdb_version`: the
+// embedded release, always. With no database embedded (the placeholder, a
+// development build) it is the literal "unavailable", so a stamp never
+// reads as a release and never comes from a client.
+std::string release_stamp();
+
 }  // namespace archivum::punchline::tz
