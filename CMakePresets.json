@@ -64,8 +64,7 @@
   "testPresets": [
     { "name": "linux-debug", "configurePreset": "linux-debug", "output": { "outputOnFailure": true } },
     { "name": "linux-release", "configurePreset": "linux-release", "output": { "outputOnFailure": true } },
-    { "name": "linux-tsan", "configurePreset": "linux-tsan", "output": { "outputOnFailure": true },
-      "filter": { "include": { "label": "concurrency" } } },
+    { "name": "linux-tsan", "configurePreset": "linux-tsan", "output": { "outputOnFailure": true } },
     { "name": "windows-debug", "configurePreset": "windows", "configuration": "Debug", "output": { "outputOnFailure": true } },
     { "name": "windows-release", "configurePreset": "windows", "configuration": "RelWithDebInfo", "output": { "outputOnFailure": true } }
   ]
