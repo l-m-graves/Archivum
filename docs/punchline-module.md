@@ -20,7 +20,7 @@ over HTTPS in `tests/server/server_punchline_test.cpp`.
   "entries": [ { "entry_uuid": uuid, "journal_sequence": int, "kind": "in"|"out",
                  "device_time_us": int, "local_time": "YYYY-MM-DDTHH:MM:SS",
                  "site_zone": "IANA zone"?, "tzdb_version": text?,
-                 "pay_code": text?, "note": text? } ],
+                 "pay_code": text?, "note": text?, "break_code": text? } ],
   "reports": [ { "kind": "retry_exhausted"|"journal_recovery", "detail": text } ]? }
 ```
 
@@ -226,7 +226,10 @@ shifts only and reports how many shifts it withheld.
 
 `POST /api/v1/entries/manual` by the employee's supervisor at the time
 or by payroll: `{employee_number, kind, device_time_us, local_time,
-site_zone, tzdb_version, reason, correction_of?, pay_code?, note?}`. The
+site_zone, tzdb_version, reason, reason_code, correction_of?, pay_code?,
+break_code?, note?}`. The edit's class (`payroll` or `supervisor`, from who
+made it) and its `reason_code` are recorded with it, and the audit action
+is `payroll.edit` or `supervisor.edit` (below). The
 entry is `attestation: manual`, has no journal, and carries the reason.
 With `correction_of` the original must be the same employee's, not
 already corrected, and not approved or later; it is marked
@@ -329,6 +332,171 @@ and non-positive values fail startup.
 | `employee_id_rejection_threshold` | 5 | the tamper signal |
 | `monitor_interval_seconds` | 60 | the monitor |
 | `max_batch_entries` | 500 | sync (413 above it; at most 10000) |
+| `week_start_weekday` | 0 (Sunday) | the weekly-hours flag (an assumption to confirm, below) |
+
+## Payroll reference rules
+
+Rules the business supplied from its payroll reference after Stage 6 was
+built. **The reference document was not available to the session that
+wrote this: not in either repository, not on any branch of the Punchline
+repository, not attached.** Every rule below comes from the requester's
+written description of it, not from the document, and is marked
+*confirmed* only where the requester's statement leaves no room. Where it
+does, the assumption is named and is a configuration value or a recorded
+row that is changed without a migration. Migration 2 of the module (and
+migration 2 of the core module, for the `people` role) carries the schema;
+`docs/punchline-schema.md` lists the tables. Code: `payroll.h` and
+`payroll.cpp` in the module; routes at the end of `punchline_routes.cpp`;
+tests in `punchline_sync_test.cpp` and `server_punchline_test.cpp` (the
+`i_`, `j_` and `k_` scenarios).
+
+### Who does what
+
+| Type | Does | Not |
+|---|---|---|
+| Employee | punches | anything else |
+| Supervisor | approves timesheets; authorizes overtime | release to payroll |
+| Payroll | edits employee punches (its edit view is the GUI reference for Stage 8-P) | approve (without an override reason), authorize overtime |
+| People | grants and revokes supervisors' access (`role_grants`, audited) | any other role change |
+| Admin | device enrollment, configuration | not a business role; never stands in for one |
+
+`people` is a role in `role_grants`; the granting routes are
+`/api/v1/people/supervisors` (GET lists, POST grants by employee number)
+and `/api/v1/people/supervisors/revoke`. A grant goes to the employee's
+Entra identity, so an employee with none cannot be made a supervisor (409).
+Audit actions `people.grant_supervisor` and `people.revoke_supervisor`.
+
+**Two places where the code still differs from that table, for a ruling
+rather than a quiet change:**
+
+1. `POST /api/v1/admin/roles` (administrators) still grants any role,
+   `supervisor` included, as Stage 4 built it. If only People may grant
+   supervisor access, admin's route should refuse it. Until told, both
+   can, and the audit action differs (`role.grant` against
+   `people.grant_supervisor`), so the two are distinguishable in the
+   report.
+2. A supervisor may enter a manual punch for a report
+   (`supervisor.edit`), as PL-4 has said since Stage 6. The reference says
+   payroll edits punches. Both are kept and recorded as different classes;
+   whether the supervisor's route stays is the requester's call.
+
+### Payroll edits are a class of their own
+
+A manual entry carries `edit_class` (`payroll` or `supervisor`, taken from
+the caller's standing, never from the body) and a required `reason_code`
+(1 to 16 characters, upper-case letters, digits and underscore). It lands
+in `entry_edits` and in the audit log as `payroll.edit` or
+`supervisor.edit`. A payroll edit is an audited correction with a reason
+code and is distinct from a supervisor's approval, which is a lifecycle
+transition in `approvals`. The segregation-of-duties report
+(`/api/v1/admin/roles/conflicts`) lists `edits_by_class` and
+`edits_by_editor` beside the role conflicts, so payroll edits are counted
+as their own class. **The reason-code list is not known to me**: the code
+takes any well-formed code and records it, and a lookup table with
+descriptions is the follow-up once the list is supplied.
+
+### Scheduled hours and the flag
+
+The requester asked whether `schedules` carries `scheduled_daily_hours`
+and `scheduled_weekly_hours`, effective-dated per employee. **It does
+not**: `schedules` is one row per weekday with a start and an end minute
+(shifts of the day), which is what the late/early check reads. Hours per
+day and per week are a different fact, so a new table, `schedule_hours`,
+carries them: per employee, effective-dated (`effective_from_day`, open
+`effective_to_day`), stored in minutes, no overlap for one employee
+(refused with 409). Written and read in hours by
+`/api/v1/admin/schedule-hours` (admin or payroll).
+
+A timesheet (one employee in one period) is **flagged** when a day's
+closed-shift hours exceed `scheduled_daily_hours`, or a week's exceed
+`scheduled_weekly_hours`, for the limits in force on that day (the week's
+limits are those in force on its first day). Weeks start on
+`week_start_weekday` (Sunday by default; **an assumption**, the
+description does not say). An employee with no `schedule_hours` row has
+nothing to compare with and is never flagged. The flag is evaluated after
+every pairing change (sync, correction) and when a limit is filed.
+
+The flag is a **hold** (`timesheet_holds`), and it is not a lifecycle
+state and not an exception. The two stay separate on purpose:
+
+| | Exception queue | Hold |
+|---|---|---|
+| What it is | a problem a reviewer should look at | a timesheet withheld from payroll |
+| Effect | surfaces in queues; some block approval | hidden from payroll; release refused for everyone |
+| Cleared by | resolution, or the approval that covers it | the supervisor's authorization, or the hours coming back within the limits |
+| Tables | `exceptions` | `timesheet_holds` |
+
+While a hold is open, payroll cannot see the timesheet: the payroll
+export omits it, its view of the timesheet, exceptions and lifecycle
+routes answers 404 "no such timesheet" (not 403; there is nothing there for
+it), and a payroll edit of it is refused the same way. Supervisors see it
+in their queue with `held_for_overtime_authorization` and the detail.
+`released` is refused with PL-7 for any caller, override or not, while the
+hold is open. Approval is still the supervisor's and still happens.
+
+Authorization: `POST /api/v1/supervisor/periods/{id}/authorize-overtime`
+with `{employee_number, note?}`, by **the employee's own supervisor at that
+time** only (not the employee, payroll, an administrator or another
+supervisor), audited as `overtime.authorize`. It records the **overtime
+excess** the supervisor was looking at (the larger of the minutes over the
+daily limits summed over days and the minutes over the weekly limits
+summed over weeks) and clears the hold. More overtime later than that
+reopens the hold; hours worked within the schedule do not. The first
+version of this recorded total period minutes and so reopened the hold for
+a normal day added after an authorization; the test that found it is
+`authorization_covers_the_overtime_seen_more_overtime_reopens_the_hold_and_normal_days_do_not`.
+
+### Codes
+
+Three kinds, kept apart (`pay_codes`, `annotation_codes`, `break_codes`):
+
+- **Pay codes that change pay**: `OT` and `DT`, added to `pay_codes`. The
+  earlier `overtime` and `double_time` seeds are kept (rows may point at
+  them) and deactivated. Computing which hours are OT or DT is still the
+  Stage 8-P payroll configuration; nothing assigns them automatically.
+- **Annotations, informational, never changing pay**: `L` (late) and `E`
+  (early), recorded per shift in `shift_annotations` and rebuilt with the
+  shift. **The definitions are my assumption**: `L` is a shift whose first
+  in punch is more than `schedule_tolerance_minutes` after the day's
+  scheduled start; `E` is a same-day out punch more than the tolerance
+  before the scheduled end. The reference's own thresholds are to be
+  confirmed. A day without a schedule row is not annotated.
+- **Break codes**: `M` (meal), carried on the out punch that begins the
+  meal (`break_code` on a sync entry or a manual entry; an in punch with
+  one is refused as malformed, an unknown or inactive code is rejected per
+  entry). The meal is the time from that out punch to the employee's next
+  punch (`meal_breaks`; open while they have not come back).
+
+### The meal premium
+
+`M` carries a premium marker. Whether a meal earns the premium is the
+configurable rule in `break_premium_rules`: break code, threshold minutes,
+comparison (`greater_than` or `at_least`), effective dates, and, required,
+its `definition` in words and its `source`. The requester's description is
+that the premium triggers when the meal exceeds 45 minutes "per the
+reference".
+
+**That trigger is not confirmed.** I cannot cite the reference, so no
+rule is seeded, and a rule stored through `/api/v1/admin/break-premium-rules`
+is `confirmed: false` unless the request says otherwise. An unconfirmed
+rule is stored and shown, **never applied**: meals get no premium. The
+open questions the reference answers and I cannot: is the threshold
+"more than 45" or "45 or more" (`comparison`), does it run from out to in
+punch as here, is the meal itself paid or unpaid, and is the premium
+per meal or per day. When someone quotes the page, the rule is added with
+that page as `source` and `confirmed: true`; meals are recomputed as their
+pairing is rebuilt. Until then the tests prove the mechanism (50 minutes
+against a confirmed 45 is premium, exactly 45 is not under `greater_than`,
+an unconfirmed rule changes nothing), not the business fact.
+
+### Employee number
+
+`employees.employee_number` is text, the payroll system's canonical
+string, stored and displayed exactly as given (leading zeros kept, no
+numeric folding: `employee_by_number("123")` does not find `000123`). The
+rollback export's `employee_id` key carries it unchanged. Tested in
+`employee_numbers_are_stored_and_exported_as_the_payroll_system_wrote_them`
+and, over HTTP, in scenario `i_`.
 
 ## The contract suite
 
@@ -387,7 +555,7 @@ how long; it cannot say they were carried across.
 
 - Return-to-employee (approved back to recorded) and retroactive
   adjustments against a locked period: the payroll console, Stage 8-P.
-- Pay-code computation (regular, overtime, double time) and rounding:
+- Pay-code computation (regular, `OT`, `DT`) and rounding:
   configuration for Stage 8-P; shifts carry the pay code the punch named.
 - Notification (email may notify, never authorizes): Stage 8-P.
 - Rate limiting of the sync endpoint by client address: `trusted_proxies`

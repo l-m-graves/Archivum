@@ -72,7 +72,9 @@ TableDef change_feed() {
   return t;
 }
 
-TableDef role_grants() {
+// `with_people`: migration 1 created the table without the `people` role;
+// migration 2 rebuilds it with it (the engine has no ALTER for a check).
+TableDef role_grants(bool with_people = true) {
   TableDef t;
   t.name = kRoleGrants;
   t.columns = {col("id", ColumnType::Integer),  col("tid", ColumnType::Text),
@@ -80,7 +82,8 @@ TableDef role_grants() {
                col("granted_by", ColumnType::Text), col("granted_at", ColumnType::Timestamp)};
   t.primary_key = {"id"};
   t.indexes = {index("role_grants_principal", {"tid", "oid", "role"}, true), index("role_grants_role", {"role"})};
-  t.checks = {one_of("role_grants_role_known", "role", {"supervisor", "payroll", "admin", "analyst"}),
+  t.checks = {with_people ? one_of("role_grants_role_known", "role", {"supervisor", "payroll", "admin", "analyst", "people"})
+                          : one_of("role_grants_role_known", "role", {"supervisor", "payroll", "admin", "analyst"}),
               non_empty("role_grants_tid_nonempty", "tid"), non_empty("role_grants_oid_nonempty", "oid")};
   return t;
 }
@@ -120,8 +123,25 @@ TableDef local_accounts() {
 }
 
 Status apply_v1(Writer& w) {
-  for (const TableDef& t : {audit_log(), change_feed(), role_grants(), dataset_grants(), local_accounts()}) {
+  for (const TableDef& t : {audit_log(), change_feed(), role_grants(false), dataset_grants(), local_accounts()}) {
     if (Status s = w.create_table(t); !s.ok()) return s;
+  }
+  return Status();
+}
+
+// Adds the `people` role (Stage 6 payroll-reference rules: People grants
+// supervisors their access). The engine has no ALTER, so the table is
+// rebuilt inside the migration's transaction: read every grant, drop the
+// table, create it with the wider check, put every row back with its id.
+// Nothing references role_grants, so the drop cannot be refused, and a
+// crash at any point rolls the whole step back.
+Status apply_v2(Writer& w) {
+  auto rows = w.scan_all(kRoleGrants);
+  if (!rows.ok()) return rows.status();
+  if (Status s = w.drop_table(kRoleGrants); !s.ok()) return s;
+  if (Status s = w.create_table(role_grants(true)); !s.ok()) return s;
+  for (const engine::Row& r : rows.value()) {
+    if (Status s = w.insert(kRoleGrants, r); !s.ok()) return s;
   }
   return Status();
 }
@@ -129,7 +149,8 @@ Status apply_v1(Writer& w) {
 }  // namespace
 
 const std::vector<engine::Migration>& migrations() {
-  static const std::vector<engine::Migration> list = {engine::Migration{1, "core_v1", &apply_v1}};
+  static const std::vector<engine::Migration> list = {engine::Migration{1, "core_v1", &apply_v1},
+                                                      engine::Migration{2, "core_people_role", &apply_v2}};
   return list;
 }
 

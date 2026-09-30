@@ -1,4 +1,4 @@
-# Punchline schema (module `punchline`, migration 1)
+# Punchline schema (module `punchline`, migrations 1 and 2)
 
 `modules/punchline/src/schema.cpp`; applied by `archivum migrate --db`
 after the core schema (`docs/server-core.md`). The rules behind the tables
@@ -108,3 +108,35 @@ code are configuration for Stage 6, not schema.
 | Local day of a punch | taken from the wall clock the device recorded (`local_time`), not recomputed from the instant: the server has no tz database yet (`docs/punchline-module.md`, "Local time") |
 | Roles | elevated roles only in `role_grants` (core); every employee is an employee by their row |
 | Pay calendar, thresholds, zone | configuration, not schema (`docs/plan-v1.md` section 2) |
+
+## Migration 2: the payroll reference rules
+
+Applied to a v1 database in place; the format is not frozen yet, but the
+upgrade is tested as if it were
+(`tests/crash/punchline_migration_test.cpp`: upgrade from a v1 fixture,
+and a crash at every step of the migration). The engine has no ALTER, so
+migration 2 adds tables only, and rebuilds one core table: the core
+module's `role_grants` (migration `core_people_role`) gets the `people`
+role added to its role check: the step reads the rows, drops the table,
+creates it again under the same name with the wider check and inserts the
+rows back, all in the migration's one transaction (nothing references
+`role_grants`, so the drop cannot be refused, and a crash rolls the whole
+step back). Catalog
+`schema_version` counts applied migrations overall and is 4 (core 1 and
+2, punchline 1 and 2). Every foreign key has the index the engine
+requires (leading columns are the foreign-key columns).
+
+| Table | Holds |
+|---|---|
+| `schedule_hours` | per employee, effective-dated daily and weekly scheduled minutes |
+| `timesheet_holds` | the flag: one open hold per employee and period, with reason and detail; closed, not deleted, when cleared |
+| `overtime_authorizations` | the supervisor's authorization: the overtime excess authorized, who (Entra tid and oid), when, the audit row |
+| `annotation_codes`, `shift_annotations` | `L` and `E` and where they apply |
+| `break_codes`, `entry_break_codes`, `meal_breaks` | `M`, the punches that carry a break code, the meals built from them |
+| `break_premium_rules` | the configurable premium rule: threshold, comparison, definition, source, `confirmed` |
+| `entry_edits` | class (`payroll` or `supervisor`), reason code and editor of each manual entry |
+
+`pay_codes` gains `OT` and `DT` (the earlier `overtime` and `double_time`
+rows stay and are deactivated). Nothing is deleted from a v1 database, and
+no v1 column changes. `docs/punchline-module.md`, "Payroll reference
+rules", is the account of what each table is for and what is assumed.

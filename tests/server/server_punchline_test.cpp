@@ -310,7 +310,7 @@ ARCHIVUM_TEST(d_correction_by_the_supervisor_supersedes_the_entry) {
   REQUIRE(stray != 0);
   nlohmann::json m{{"employee_number", "E0001"}, {"kind", "in"},   {"device_time_us", kMonday + (86400 + 9 * 3600 + 5 * 60) * kUs},
                    {"local_time", "2024-03-05T09:05:00"},
-                   {"correction_of", stray}, {"reason", "double punch at the door"}};
+                   {"correction_of", stray}, {"reason", "double punch at the door"}, {"reason_code", "DOUBLE_PUNCH"}};
   {
     // Neither the zone nor the release is a request field on a manual entry.
     nlohmann::json with_zone = m;
@@ -324,10 +324,17 @@ ARCHIVUM_TEST(d_correction_by_the_supervisor_supersedes_the_entry) {
   auto r = f.post("/api/v1/entries/manual", m.dump(), boss());
   REQUIRE_MSG(r.status == 201, r.body);
   CHECK(parse(r.body)["attestation"] == "manual" && parse(r.body)["correction_of"] == stray);
-  CHECK(audit_count("entry.correct") == 1);
+  // A supervisor's edit is its own audit class, not payroll's.
+  CHECK(audit_count("supervisor.edit") == 1 && audit_count("payroll.edit") == 0);
   nlohmann::json no_reason = m;
   no_reason["reason"] = "";
   CHECK(f.post("/api/v1/entries/manual", no_reason.dump(), boss()).status == 400);
+  nlohmann::json no_code = m;
+  no_code.erase("reason_code");
+  CHECK(f.post("/api/v1/entries/manual", no_code.dump(), boss()).status == 400);  // a reason code is required
+  nlohmann::json lower_code = m;
+  lower_code["reason_code"] = "not a code";
+  CHECK(f.post("/api/v1/entries/manual", lower_code.dump(), boss()).status == 400);
   CHECK(f.post("/api/v1/entries/manual", m.dump(), boss()).status == 409);  // already corrected
 }
 
@@ -403,6 +410,7 @@ ARCHIVUM_TEST(e_lifecycle_over_http_reaches_payroll_only_by_release) {
   }
   CHECK(overrides == 1);
   CHECK(rep["manual_entries"].size() == 1);
+  CHECK(rep["manual_entries"][0]["edit_class"] == "supervisor" && rep["manual_entries"][0]["reason_code"] == "DOUBLE_PUNCH");
   CHECK(!rep["exceptions"].empty());
   CHECK(f.get("/api/v1/payroll/periods/" + std::to_string(g_period) + "/audit", worker()).status == 403);
   // A punch for the locked period is accepted, unassigned, flagged past_cutoff.
@@ -571,6 +579,173 @@ ARCHIVUM_TEST(h_monitor_flags_stale_devices_and_cutoffs) {
   auto approved = f.post(p + "/approve", nlohmann::json{{"employee_number", "E0001"}, {"override_reason", "past cutoff"}}.dump(), payroll());
   REQUIRE_MSG(approved.status == 200, approved.body);
   CHECK(open_exceptions("past_cutoff") == 1);
+}
+
+// ---- payroll reference rules over HTTP ---------------------------------------
+
+namespace {
+constexpr const char* kPeopleOid = "8f1c2b2e-0000-4000-8000-0000000000a1";
+constexpr const char* kSecondSupervisorOid = "8f1c2b2e-0000-4000-8000-0000000000a2";
+std::string people() { return bearer_for(kPeopleOid, "sub-00a1"); }
+std::string second_boss() { return bearer_for(kSecondSupervisorOid, "sub-00a2"); }
+nlohmann::json manual(const char* kind, int day, int hour, const char* reason_code, const char* reason = "missed punch") {
+  nlohmann::json e = punch(0, 0, kind, day, hour);
+  return nlohmann::json{{"employee_number", "E0001"},   {"kind", kind},
+                        {"device_time_us", e["device_time_us"]}, {"local_time", e["local_time"]},
+                        {"reason", reason},             {"reason_code", reason_code}};
+}
+}  // namespace
+
+ARCHIVUM_TEST(i_people_grant_supervisor_access_and_it_is_audited) {
+  auto& f = fixture();
+  REQUIRE_OK(f.run_status);
+  // Administrators set up the People principal (system role, not a business one).
+  REQUIRE(f.post("/api/v1/admin/employees",
+                 nlohmann::json{{"employee_number", "P0001"}, {"display_name", "Pat People"}, {"site_zone", "UTC"}, {"tid", ServerFixture::kTid}, {"oid", kPeopleOid}}
+                     .dump(), admin()).status == 201);
+  REQUIRE(f.post("/api/v1/admin/roles", nlohmann::json{{"tid", ServerFixture::kTid}, {"oid", kPeopleOid}, {"role", "people"}}.dump(), admin()).status == 201);
+  REQUIRE(f.post("/api/v1/admin/employees",
+                 nlohmann::json{{"employee_number", "S0002"}, {"display_name", "Sasha Second"}, {"site_zone", "UTC"}, {"tid", ServerFixture::kTid},
+                                {"oid", kSecondSupervisorOid}}.dump(), admin()).status == 201);
+  REQUIRE(f.post("/api/v1/admin/employees",
+                 nlohmann::json{{"employee_number", "000777"}, {"display_name", "No Identity"}, {"site_zone", "UTC"}}.dump(), admin()).status == 201);
+  // The employee number is returned as written, leading zeros and all.
+  auto list = f.get("/api/v1/admin/employees", admin());
+  REQUIRE_MSG(list.status == 200, list.body);
+  bool found = false;
+  const auto listed_employees = parse(list.body);
+  for (const auto& e : listed_employees["employees"]) found = found || e["employee_number"] == "000777";
+  CHECK(found);
+  const nlohmann::json grant{{"employee_number", "S0002"}};
+  // Nobody but People grants supervisors here.
+  for (const std::string& who : {worker(), boss(), payroll(), admin()}) {
+    CHECK(f.post("/api/v1/people/supervisors", grant.dump(), who).status == 403);
+  }
+  CHECK(f.post("/api/v1/people/supervisors", nlohmann::json{{"employee_number", "000777"}}.dump(), people()).status == 409);  // no identity
+  CHECK(f.post("/api/v1/people/supervisors", nlohmann::json{{"employee_number", "NOPE"}}.dump(), people()).status == 404);
+  CHECK(f.get("/api/v1/supervisor/periods/" + std::to_string(g_period), second_boss()).status == 403);  // not yet a supervisor
+  CHECK(audit_count("people.grant_supervisor") == 0);
+  auto granted = f.post("/api/v1/people/supervisors", grant.dump(), people());
+  REQUIRE_MSG(granted.status == 201, granted.body);
+  CHECK(audit_count("people.grant_supervisor") == 1);
+  CHECK(f.get("/api/v1/supervisor/periods/" + std::to_string(g_period), second_boss()).status == 200);
+  auto listed = f.get("/api/v1/people/supervisors", people());
+  REQUIRE_MSG(listed.status == 200, listed.body);
+  bool listed_second = false;
+  const auto listed_supervisors = parse(listed.body);
+  for (const auto& sup : listed_supervisors["supervisors"]) listed_second = listed_second || sup["employee"]["employee_number"] == "S0002";
+  CHECK(listed_second);
+  CHECK(f.get("/api/v1/people/supervisors", admin()).status == 403);
+  // Revocation is audited too, and revoking what is not held is a 404.
+  CHECK(f.post("/api/v1/people/supervisors/revoke", grant.dump(), admin()).status == 403);
+  REQUIRE(f.post("/api/v1/people/supervisors/revoke", grant.dump(), people()).status == 200);
+  CHECK(audit_count("people.revoke_supervisor") == 1);
+  CHECK(f.post("/api/v1/people/supervisors/revoke", grant.dump(), people()).status == 404);
+  CHECK(f.get("/api/v1/supervisor/periods/" + std::to_string(g_period), second_boss()).status == 403);
+  // Granted again: the second supervisor is used below as "not the employee's supervisor".
+  REQUIRE(f.post("/api/v1/people/supervisors", grant.dump(), people()).status == 201);
+}
+
+ARCHIVUM_TEST(j_a_timesheet_over_its_scheduled_hours_is_held_hidden_from_payroll_and_released_by_authorization) {
+  auto& f = fixture();
+  REQUIRE_OK(f.run_status);
+  auto period = f.post("/api/v1/admin/periods",
+                       nlohmann::json{{"start_day", "2024-03-18"}, {"end_day", "2024-03-24"}, {"site_zone", "UTC"},
+                                      {"submit_by_us", 4'000'000'000LL * kUs}, {"approve_by_us", 4'000'100'000LL * kUs}}
+                           .dump(),
+                       payroll());
+  REQUIRE_MSG(period.status == 201, period.body);
+  const std::int64_t p2 = parse(period.body)["id"].get<std::int64_t>();
+  const std::string path = "/api/v1/periods/" + std::to_string(p2);
+  const nlohmann::json employee{{"employee_number", "E0001"}};
+  // Scheduled hours: a question the schedules table could not answer, so their own table.
+  CHECK(f.post("/api/v1/admin/schedule-hours", nlohmann::json{{"employee_number", "E0001"}, {"effective_from_day", "2024-01-01"},
+                                                              {"scheduled_daily_hours", 8}, {"scheduled_weekly_hours", 40}}.dump(), worker()).status == 403);
+  CHECK(f.post("/api/v1/admin/schedule-hours", nlohmann::json{{"employee_number", "E0001"}, {"effective_from_day", "2024-01-01"},
+                                                              {"scheduled_daily_hours", 8}}.dump(), admin()).status == 400);
+  REQUIRE(f.post("/api/v1/admin/schedule-hours", nlohmann::json{{"employee_number", "E0001"}, {"effective_from_day", "2024-01-01"},
+                                                                {"scheduled_daily_hours", 8}, {"scheduled_weekly_hours", 40}}.dump(), admin()).status == 201);
+  CHECK(f.post("/api/v1/admin/schedule-hours", nlohmann::json{{"employee_number", "E0001"}, {"effective_from_day", "2024-06-01"},
+                                                              {"scheduled_daily_hours", 8}, {"scheduled_weekly_hours", 40}}.dump(), admin()).status == 409);  // overlaps the open range
+  // Ten hours on Monday 2024-03-18: two over.
+  const std::string device = "Device " + g_device_credential;
+  auto sync = f.post("/api/v1/device/sync", batch(30, {punch(300, 300, "in", 14, 9), punch(301, 301, "out", 14, 19)}).dump(), device);
+  REQUIRE_MSG(sync.status == 200, sync.body);
+  CHECK(open_exceptions("overtime") == 0);  // a hold is not an exception
+  auto queue = f.get("/api/v1/supervisor/periods/" + std::to_string(p2), boss());
+  REQUIRE_MSG(queue.status == 200, queue.body);
+  REQUIRE(parse(queue.body)["reports"].size() == 1);
+  CHECK(parse(queue.body)["reports"][0]["held_for_overtime_authorization"] == true);
+  CHECK(parse(queue.body)["reports"][0]["hold"]["reason"] == "daily_hours");
+  // Payroll cannot see it, edit it, or move it.
+  CHECK(f.post("/api/v1/entries/manual", manual("in", 16, 9, "MISSED_PUNCH").dump(), payroll()).status == 404);
+  CHECK(f.post(path + "/submit", employee.dump(), payroll()).status == 404);
+  CHECK(f.post(path + "/submit", employee.dump(), boss()).status == 200);
+  CHECK(f.post(path + "/approve", nlohmann::json{{"employee_number", "E0001"}, {"note", "reviewed"}}.dump(), boss()).status == 200);
+  CHECK(f.post(path + "/release", employee.dump(), payroll()).status == 404);
+  CHECK(audit_count("payroll.edit") == 0);
+  // The supervisor, even with override standing elsewhere, does not release: the gate holds for everyone.
+  CHECK(f.post(path + "/release", employee.dump(), boss()).status == 409);
+  // Only the employee's own supervisor authorizes: not the employee, payroll, admin, nor another supervisor.
+  const std::string authorize = "/api/v1/supervisor/periods/" + std::to_string(p2) + "/authorize-overtime";
+  for (const std::string& who : {worker(), payroll(), admin(), second_boss()}) {
+    CHECK(f.post(authorize, employee.dump(), who).status == 403);
+  }
+  CHECK(audit_count("overtime.authorize") == 0);
+  auto authorized = f.post(authorize, nlohmann::json{{"employee_number", "E0001"}, {"note", "covered the line"}}.dump(), boss());
+  REQUIRE_MSG(authorized.status == 201, authorized.body);
+  CHECK(parse(authorized.body)["authorized_overtime_hours_hundredths"] == 200);
+  CHECK(audit_count("overtime.authorize") == 1);
+  CHECK(f.post(authorize, employee.dump(), boss()).status == 404);  // nothing held any more
+  // Visible to payroll now: its edit is an audited correction of its own class.
+  auto in = f.post("/api/v1/entries/manual", manual("in", 16, 9, "MISSED_PUNCH").dump(), payroll());
+  REQUIRE_MSG(in.status == 201, in.body);
+  REQUIRE(f.post("/api/v1/entries/manual", manual("out", 16, 17, "MISSED_PUNCH").dump(), payroll()).status == 201);
+  CHECK(f.post("/api/v1/entries/manual", manual("out", 16, 17, "lowercase").dump(), payroll()).status == 400);
+  auto no_code = manual("out", 16, 17, "X");
+  no_code.erase("reason_code");
+  CHECK(f.post("/api/v1/entries/manual", no_code.dump(), payroll()).status == 400);
+  CHECK(audit_count("payroll.edit") == 2);
+  REQUIRE(f.post("/api/v1/entries/manual", manual("in", 17, 9, "WRONG_DAY").dump(), boss()).status == 201);
+  CHECK(audit_count("supervisor.edit") >= 1);
+  // The segregation report has payroll edits as their own class.
+  auto sod = f.get("/api/v1/admin/roles/conflicts", payroll());
+  REQUIRE_MSG(sod.status == 200, sod.body);
+  CHECK(parse(sod.body)["edits_by_class"]["payroll"] == 2);
+  CHECK(parse(sod.body)["edits_by_class"]["supervisor"].get<int>() >= 1);
+  bool payroll_editor_listed = false;
+  const auto sod_body = parse(sod.body);
+  for (const auto& e : sod_body["edits_by_editor"]) payroll_editor_listed = payroll_editor_listed || e["edit_class"] == "payroll";
+  CHECK(payroll_editor_listed);
+  // The Wednesday day added no overtime: the authorization still stands and
+  // the hold stays closed.
+  auto after = f.get("/api/v1/supervisor/periods/" + std::to_string(p2), boss());
+  CHECK(parse(after.body)["reports"][0]["held_for_overtime_authorization"] == false);
+  // A fresh employee-id in any body is still refused here (the sweep covers every route; this one is the new ones).
+  CHECK(f.post("/api/v1/entries/manual", nlohmann::json{{"employee_number", "E0001"}, {"employee_id", 1}}.dump(), payroll()).status == 400);
+}
+
+ARCHIVUM_TEST(k_the_meal_premium_rule_is_stored_with_its_definition_and_unconfirmed_unless_someone_checked) {
+  auto& f = fixture();
+  REQUIRE_OK(f.run_status);
+  const nlohmann::json rule{{"break_code", "M"},
+                            {"threshold_minutes", 45},
+                            {"comparison", "greater_than"},
+                            {"definition", "a meal longer than 45 minutes carries a premium"},
+                            {"source", "payroll reference, as quoted by the requester; the document itself has not been read"},
+                            {"effective_from_day", "2024-01-01"}};
+  CHECK(f.post("/api/v1/admin/break-premium-rules", rule.dump(), worker()).status == 403);
+  auto missing = rule;
+  missing.erase("source");
+  CHECK(f.post("/api/v1/admin/break-premium-rules", missing.dump(), admin()).status == 400);  // a rule without its source is refused
+  auto added = f.post("/api/v1/admin/break-premium-rules", rule.dump(), admin());
+  REQUIRE_MSG(added.status == 201, added.body);
+  CHECK(parse(added.body)["confirmed"] == false);  // the default: stored, not applied
+  auto listed = f.get("/api/v1/admin/break-premium-rules", payroll());
+  REQUIRE_MSG(listed.status == 200, listed.body);
+  REQUIRE(parse(listed.body)["rules"].size() == 1);
+  CHECK(parse(listed.body)["rules"][0]["definition"] == rule["definition"] && parse(listed.body)["rules"][0]["confirmed"] == false);
+  CHECK(audit_count("break_rule.add") == 1);
 }
 
 ARCHIVUM_TEST(zz_shutdown_fixture) {

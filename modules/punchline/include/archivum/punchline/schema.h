@@ -16,6 +16,8 @@ const std::vector<engine::Migration>& migrations();
 
 // Names of the tables migration 1 creates, in creation order.
 const std::vector<std::string>& v1_tables();
+// Names of the tables migration 2 (the payroll-reference rules) creates.
+const std::vector<std::string>& v2_tables();
 
 class Module final : public core::Module {
  public:

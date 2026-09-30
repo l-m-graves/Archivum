@@ -11,6 +11,7 @@
 #include "archivum/core/ids.h"
 #include "archivum/punchline/exceptions.h"
 #include "archivum/punchline/localtime.h"
+#include "archivum/punchline/payroll.h"
 #include "archivum/punchline/rules.h"
 
 namespace archivum::punchline {
@@ -149,6 +150,8 @@ Status validate_incoming(const IncomingEntry& e) {
   if (e.tzdb_version.size() > 32) return Status::invalid_argument("tzdb_version is too long");
   if (e.note.size() > 4096) return Status::invalid_argument("note is too long");
   if (e.pay_code.size() > 64) return Status::invalid_argument("pay_code is too long");
+  if (e.break_code.size() > 8) return Status::invalid_argument("break_code is too long");
+  if (!e.break_code.empty() && e.kind != "out") return Status::invalid_argument("a break code applies to an out punch");
   return Status();
 }
 
@@ -182,7 +185,9 @@ Status repair_pairing(core::Recorder& rec, const Config& cfg, std::int64_t emplo
     if (new_start == start) break;
     start = new_start;
   }
+  std::set<std::int64_t> touched_periods;
   for (const Shift& sh : affected) {
+    if (sh.period_id != 0) touched_periods.insert(sh.period_id);
     // The pairing exceptions of the rebuilt shifts are resolved and reopened
     // by the fold below if still warranted.
     for (const char* kind : {"unpaired_punch", "long_shift", "no_schedule", "non_scheduled_day", "outside_schedule"}) {
@@ -195,6 +200,7 @@ Status repair_pairing(core::Recorder& rec, const Config& cfg, std::int64_t emplo
         if (auto r = resolve_matching(rec, key, "pairing", now_us); !r.ok()) return r.status();
       }
     }
+    if (Status s = remove_annotations(rec, sh.id); !s.ok()) return s;
     if (Status s = rec.remove("shifts", {Value::integer(sh.id)}); !s.ok()) return s;
   }
   auto all_entries = current_entries_from(w, employee_id, start);
@@ -202,6 +208,7 @@ Status repair_pairing(core::Recorder& rec, const Config& cfg, std::int64_t emplo
   Result<std::vector<TimeEntry>> entries = std::vector<TimeEntry>();
   for (const TimeEntry& e : all_entries.value()) {
     if (!later_than_submitted(e.state)) entries.value().push_back(e);  // settled entries keep their settled shifts
+    if (e.period_id != 0) touched_periods.insert(e.period_id);
   }
   // Unpaired-punch exceptions on entries in the rebuilt range are resolved
   // first; the fold reopens the ones still unpaired.
@@ -299,10 +306,19 @@ Status repair_pairing(core::Recorder& rec, const Config& cfg, std::int64_t emplo
       note_opened(opened, o.value());
     }
     if (Status s = check_schedule(rec, cfg, *open_in, e, now_us, opened); !s.ok()) return s;
+    if (Status s = record_annotations(rec, cfg, *open, *open_in, e); !s.ok()) return s;
     open.reset();
     open_in.reset();
   }
-  return persist_open(false);
+  if (Status s = persist_open(false); !s.ok()) return s;
+  // Meals begun by marked out punches in the range, then the flag: the hours
+  // that just changed are compared with the scheduled hours, and a timesheet
+  // over them is held (docs/punchline-module.md, payroll reference rules).
+  if (Status s = rebuild_meals(rec, cfg, employee_id, start); !s.ok()) return s;
+  for (std::int64_t period_id : touched_periods) {
+    if (Status s = evaluate_hold(rec, cfg, employee_id, period_id, now_us); !s.ok()) return s;
+  }
+  return Status();
 }
 
 Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const Device& device, const IncomingBatch& batch,
@@ -427,6 +443,14 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
         continue;
       }
     }
+    if (!in.break_code.empty()) {
+      auto active = break_code_active(w, in.break_code);
+      if (!active.ok()) return active.status();
+      if (!active.value()) {
+        reject("unknown or inactive break code '" + in.break_code + "'");
+        continue;
+      }
+    }
     if (Status s = rules::device_attested_valid(w, device.id, now_us); !s.ok()) {
       if (s.code() != ErrorCode::Constraint) return s;
       reject(s.message());
@@ -468,6 +492,9 @@ Result<SyncOutcome> apply_batch(core::Recorder& rec, const Config& cfg, const De
       late = st.value();
     }
     if (Status s = rec.insert("time_entries", e.to_row()); !s.ok()) return s;
+    if (!in.break_code.empty()) {
+      if (Status s = mark_entry_break(rec, e.id, in.break_code); !s.ok()) return s;
+    }
     in_batch.insert(in.entry_uuid);
     accept();
     if (late) {
@@ -603,6 +630,12 @@ Result<TimeEntry> record_manual_entry(core::Recorder& rec, const Config& cfg, co
   auto lt = parse_local_time(m.local_time);
   if (!lt.ok()) return lt.status();
   if (m.reason.empty()) return Status::constraint("PL-4: a manual entry needs a reason");
+  if (m.edit_class != "payroll" && m.edit_class != "supervisor") return Status::invalid_argument("edit_class must be payroll or supervisor");
+  if (m.reason_code.empty() || m.reason_code.size() > 16) return Status::invalid_argument("a reason_code of 1 to 16 characters is required");
+  for (const char c : m.reason_code) {
+    if (!((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_')) return Status::invalid_argument("reason_code is upper-case letters, digits and underscore");
+  }
+  if (!m.break_code.empty() && m.kind != "out") return Status::invalid_argument("a break code applies to an out punch");
   auto emp = employee_by_id(w, m.employee_id);
   if (!emp.ok()) return emp.status();
   if (!emp.value().has_value()) return Status::not_found("no such employee");
@@ -642,6 +675,12 @@ Result<TimeEntry> record_manual_entry(core::Recorder& rec, const Config& cfg, co
   if (period.value() && period.value()->state == "locked") {
     return Status::constraint("pay period is locked; a retroactive adjustment is the payroll console's action");
   }
+  if (m.edit_class == "payroll" && period.value()) {
+    // A held timesheet is hidden from payroll: there is nothing for it to edit.
+    auto hold = open_hold(w, m.employee_id, period.value()->id);
+    if (!hold.ok()) return hold.status();
+    if (hold.value()) return Status::not_found("no such timesheet");
+  }
   auto id = core::next_id(w, "time_entries");
   if (!id.ok()) return id.status();
   TimeEntry e;
@@ -669,6 +708,10 @@ Result<TimeEntry> record_manual_entry(core::Recorder& rec, const Config& cfg, co
   e.note = m.note;
   if (Status s = rules::entry_period_valid(w, lt.value().local_day, e.period_id); !s.ok()) return s;
   if (Status s = rec.insert("time_entries", e.to_row()); !s.ok()) return s;
+  if (!m.break_code.empty()) {
+    if (Status s = mark_entry_break(rec, e.id, m.break_code); !s.ok()) return s;
+  }
+  if (Status s = record_entry_edit(rec, e.id, m.edit_class, m.reason_code, m.editor, now_us); !s.ok()) return s;
   std::int64_t from = e.device_time;
   if (original) {
     original->superseded_by = e.id;

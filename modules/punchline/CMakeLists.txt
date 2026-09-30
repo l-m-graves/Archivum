@@ -4,7 +4,7 @@
 # the module tests run without the server.
 add_custom_target(archivum_punchline_checked ALL)
 add_library(archivum_punchline STATIC src/schema.cpp src/rules.cpp src/data.cpp src/localtime.cpp
-  src/exceptions.cpp src/sync.cpp src/lifecycle.cpp src/rollback.cpp src/tzif.cpp
+  src/exceptions.cpp src/sync.cpp src/lifecycle.cpp src/rollback.cpp src/payroll.cpp src/tzif.cpp
   tzdata/embedded_tzdata.cpp)
 target_include_directories(archivum_punchline PUBLIC include)
 target_link_libraries(archivum_punchline PUBLIC archivum_core archivum_engine PRIVATE archivum_warnings)

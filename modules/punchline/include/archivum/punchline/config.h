@@ -17,6 +17,7 @@ struct Config {
   std::int64_t employee_id_rejection_threshold = 5;  // requests from one device asserting an employee id before `employee_id_asserted`
   std::int64_t monitor_interval_seconds = 60;        // freshness and cutoff checks
   std::int64_t max_batch_entries = 500;
+  std::int64_t week_start_weekday = 0;               // 0 Sunday .. 6 Saturday: the weekly-hours flag sums from here (an assumption to confirm)
 };
 
 }  // namespace archivum::punchline

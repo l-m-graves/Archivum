@@ -6,12 +6,14 @@
 #include <optional>
 #include <memory>
 #include <set>
+#include <map>
 
 #include "archivum/core/module.h"
 #include "archivum/core/schema.h"
 #include "archivum/punchline/exceptions.h"
 #include "archivum/punchline/lifecycle.h"
 #include "archivum/punchline/localtime.h"
+#include "archivum/punchline/payroll.h"
 #include "archivum/punchline/rollback.h"
 #include "archivum/punchline/schema.h"
 #include "archivum/punchline/sync.h"
@@ -374,6 +376,9 @@ ARCHIVUM_TEST(correction_supersedes_and_repairs_pairing) {
   m.local_time = "2024-03-04T09:07:00";
   m.correction_of = 1;
   m.reason = "double punch at the door";
+  m.edit_class = "supervisor";
+  m.reason_code = "DOUBLE_PUNCH";
+  m.editor = "test supervisor";
   TimeEntry created;
   REQUIRE_OK(w.act("entry.correct", [&](core::Recorder& rec) {
     auto r = record_manual_entry(rec, w.cfg, m, w.now);
@@ -572,4 +577,378 @@ ARCHIVUM_TEST(rollback_export_rewrites_shifts_as_old_store_batches) {
   auto missing = rollback_export(*rd.value(), 1, false, kMonday);
   REQUIRE_OK(missing.status());
   CHECK(missing.value().employees_without_routing == 2 && missing.value().batches[0]["entries"][0]["cost_center"] == "");
+}
+
+// ---- payroll reference rules (docs/punchline-module.md) ---------------------
+
+namespace {
+
+Status set_hours(World& w, std::int64_t daily, std::int64_t weekly) {
+  return w.act("schedule_hours.set", [&](core::Recorder& rec) {
+    return set_schedule_hours(rec, 1, 19000, 0, daily, weekly, "test", w.now).status();
+  });
+}
+
+std::optional<TimesheetHold> hold_of(World& w) {
+  auto rd = w.store->begin_read();
+  auto h = open_hold(*rd.value(), 1, 1);
+  return h.ok() ? h.value() : std::nullopt;
+}
+
+Result<TransitionResult> move_to(World& w, const char* to, const rules::Standing& who) {
+  TransitionResult out;
+  Status s = w.act("period.transition", [&](core::Recorder& rec) {
+    TransitionRequest req;
+    req.period_id = 1;
+    req.employee_id = 1;
+    req.to_state = to;
+    req.who = who;
+    req.acted_by_account = "test";
+    req.now_us = w.now;
+    auto r = transition(rec, req);
+    if (!r.ok()) return r.status();
+    out = r.value();
+    return Status();
+  });
+  if (!s.ok()) return s;
+  return out;
+}
+
+}  // namespace
+
+ARCHIVUM_TEST(a_timesheet_over_its_scheduled_hours_is_held_and_cannot_release_until_a_supervisor_authorizes) {
+  World w;
+  w.open();
+  REQUIRE_OK(set_hours(w, 8 * 60, 40 * 60));
+  IncomingBatch b;
+  b.batch_uuid = uid(201);
+  b.journal_id = uid(600);
+  b.entries = {w.punch(1, 1, "in", 0, 9), w.punch(2, 2, "out", 0, 17)};
+  REQUIRE_OK(w.sync(b).status());
+  CHECK(!hold_of(w).has_value());  // exactly the scheduled eight hours is not over
+  IncomingBatch c;
+  c.batch_uuid = uid(202);
+  c.journal_id = uid(600);
+  c.entries = {w.punch(3, 3, "in", 1, 9), w.punch(4, 4, "out", 1, 18, 30)};  // 9 h 30 on Tuesday
+  REQUIRE_OK(w.sync(c).status());
+  auto hold = hold_of(w);
+  REQUIRE(hold.has_value());
+  CHECK(hold->reason == "daily_hours" && hold->detail.find("2024-03-05") != std::string::npos);
+  // The hold is not an exception and does not mark the lifecycle.
+  CHECK(w.open_kinds("overtime").empty());
+  rules::Standing boss;
+  boss.roles = {"supervisor"};
+  boss.employee_id = 2;
+  rules::Standing self;
+  self.employee_id = 1;
+  rules::Standing payroll;
+  payroll.roles = {"payroll"};
+  REQUIRE_OK(move_to(w, "submitted", self).status());
+  REQUIRE_OK(move_to(w, "approved", boss).status());
+  auto refused = move_to(w, "released", payroll);
+  CHECK(refused.status().code() == ErrorCode::Constraint);
+  CHECK(refused.status().message().find("held for overtime authorization") != std::string::npos);
+  // The supervisor's authorization is its own audited action and clears the hold.
+  REQUIRE_OK(w.act("overtime.authorize", [&](core::Recorder& rec) {
+    return authorize_overtime(rec, w.cfg, 1, 1, "approved by phone", "tid", "boss-oid", w.now).status();
+  }));
+  CHECK(!hold_of(w).has_value());
+  CHECK(w.audit_rows("overtime.authorize") == 1);
+  REQUIRE_OK(move_to(w, "released", payroll).status());
+  // Nothing held, nothing to authorize.
+  CHECK(w.act("overtime.authorize", [&](core::Recorder& rec) {
+          return authorize_overtime(rec, w.cfg, 1, 1, "", "tid", "boss-oid", w.now).status();
+        }).code() == ErrorCode::NotFound);
+}
+
+ARCHIVUM_TEST(authorization_covers_the_overtime_seen_more_overtime_reopens_the_hold_and_normal_days_do_not) {
+  World w;
+  w.open();
+  REQUIRE_OK(set_hours(w, 8 * 60, 40 * 60));
+  IncomingBatch b;
+  b.batch_uuid = uid(211);
+  b.journal_id = uid(610);
+  b.entries = {w.punch(1, 1, "in", 0, 9), w.punch(2, 2, "out", 0, 18)};  // Monday 9 h: one hour over
+  REQUIRE_OK(w.sync(b).status());
+  REQUIRE(hold_of(w).has_value());
+  std::int64_t authorized = 0;
+  REQUIRE_OK(w.act("overtime.authorize", [&](core::Recorder& rec) {
+    auto a = authorize_overtime(rec, w.cfg, 1, 1, "", "tid", "boss-oid", w.now);
+    if (!a.ok()) return a.status();
+    authorized = a.value().authorized_minutes;
+    return Status();
+  }));
+  CHECK(authorized == 60);  // the excess, not the nine hours
+  CHECK(!hold_of(w).has_value());
+  // A normal day afterwards adds no overtime and leaves the hold closed.
+  IncomingBatch normal;
+  normal.batch_uuid = uid(212);
+  normal.journal_id = uid(610);
+  normal.entries = {w.punch(3, 3, "in", 1, 9), w.punch(4, 4, "out", 1, 17)};
+  REQUIRE_OK(w.sync(normal).status());
+  CHECK(!hold_of(w).has_value());
+  // Another overtime day: the authorization covered one hour, now there are two.
+  IncomingBatch more;
+  more.batch_uuid = uid(213);
+  more.journal_id = uid(610);
+  more.entries = {w.punch(5, 5, "in", 2, 9), w.punch(6, 6, "out", 2, 18)};
+  REQUIRE_OK(w.sync(more).status());
+  auto reopened = hold_of(w);
+  REQUIRE(reopened.has_value());
+  CHECK(reopened->detail.find("2024-03-06") != std::string::npos);
+  // A correction that brings Wednesday within its eight hours brings the
+  // excess back down to what was authorized, and the hold closes.
+  ManualEntry m;
+  m.employee_id = 1;
+  m.kind = "out";
+  m.device_time_us = kMonday + (2 * 86400 + 17 * 3600) * kUs;
+  m.local_time = "2024-03-06T17:00:00";
+  m.correction_of = 6;
+  m.reason = "left at five";
+  m.edit_class = "supervisor";
+  m.reason_code = "WRONG_TIME";
+  m.editor = "boss";
+  REQUIRE_OK(w.act("supervisor.edit", [&](core::Recorder& rec) { return record_manual_entry(rec, w.cfg, m, w.now).status(); }));
+  CHECK(!hold_of(w).has_value());
+}
+
+ARCHIVUM_TEST(the_weekly_limit_holds_a_week_of_days_each_within_the_daily_limit_and_no_schedule_hours_means_no_hold) {
+  World w;
+  w.open();
+  IncomingBatch b;
+  b.batch_uuid = uid(221);
+  b.journal_id = uid(620);
+  int n = 1;
+  for (int day = 0; day < 5; ++day) {  // five nine-hour days: 45 h
+    b.entries.push_back(w.punch(n, n, "in", day, 9));
+    ++n;
+    b.entries.push_back(w.punch(n, n, "out", day, 18));
+    ++n;
+  }
+  REQUIRE_OK(w.sync(b).status());
+  CHECK(!hold_of(w).has_value());  // no scheduled hours on file: nothing to compare with
+  // Filed afterwards, the rule applies to the next evaluation; the daily
+  // limit is generous so only the weekly one is crossed.
+  REQUIRE_OK(set_hours(w, 10 * 60, 40 * 60));
+  IncomingBatch c;
+  c.batch_uuid = uid(222);
+  c.journal_id = uid(620);
+  c.entries = {w.punch(n, n, "in", 5, 9), w.punch(n + 1, n + 1, "out", 5, 10)};
+  REQUIRE_OK(w.sync(c).status());
+  auto hold = hold_of(w);
+  REQUIRE(hold.has_value());
+  CHECK(hold->reason == "weekly_hours");
+}
+
+ARCHIVUM_TEST(scheduled_hours_are_effective_dated_and_may_not_overlap) {
+  World w;
+  w.open();
+  REQUIRE_OK(w.act("schedule_hours.set", [&](core::Recorder& rec) {
+    return set_schedule_hours(rec, 1, 19000, 19800, 480, 2400, "test", w.now).status();
+  }));
+  CHECK(w.act("schedule_hours.set", [&](core::Recorder& rec) {
+          return set_schedule_hours(rec, 1, 19700, 0, 420, 2100, "test", w.now).status();
+        }).code() == ErrorCode::Constraint);
+  REQUIRE_OK(w.act("schedule_hours.set", [&](core::Recorder& rec) {
+    return set_schedule_hours(rec, 1, 19800, 0, 420, 2100, "test", w.now).status();
+  }));
+  auto rd = w.store->begin_read();
+  auto before = schedule_hours_at(*rd.value(), 1, 19786);
+  auto after = schedule_hours_at(*rd.value(), 1, 19900);
+  auto none = schedule_hours_at(*rd.value(), 1, 18000);
+  REQUIRE_OK(before.status());
+  REQUIRE(before.value().has_value() && after.value().has_value());
+  CHECK(before.value()->daily_minutes == 480 && after.value()->daily_minutes == 420);
+  CHECK(!none.value().has_value());
+}
+
+ARCHIVUM_TEST(late_and_early_annotations_are_informational_and_follow_the_shift) {
+  World w;
+  w.open();
+  IncomingBatch b;
+  b.batch_uuid = uid(231);
+  b.journal_id = uid(630);
+  // Schedule 09:00-17:00, tolerance 30 minutes: 09:45 is late, 16:00 is early.
+  b.entries = {w.punch(1, 1, "in", 0, 9, 45), w.punch(2, 2, "out", 0, 16), w.punch(3, 3, "in", 1, 9, 10), w.punch(4, 4, "out", 1, 17)};
+  REQUIRE_OK(w.sync(b).status());
+  auto rd = w.store->begin_read();
+  auto rows = rd.value()->scan_all("shift_annotations");
+  REQUIRE_OK(rows.status());
+  std::map<std::int64_t, std::string> by_shift;
+  for (const Row& r : rows.value()) by_shift[r[1].as_int64()] += r[2].as_text();
+  auto shifts = w.shifts();
+  REQUIRE(shifts.size() == 2);
+  CHECK(by_shift[shifts[0].id] == "LE");
+  CHECK(by_shift.count(shifts[1].id) == 0);  // ten minutes late is within tolerance
+  // Annotations never reach pay: the pay code is untouched.
+  CHECK(shifts[0].pay_code.empty());
+  // The annotations are rebuilt with the shift, not duplicated.
+  IncomingBatch c;
+  c.batch_uuid = uid(232);
+  c.journal_id = uid(630);
+  c.entries = {w.punch(5, 5, "in", 2, 9)};
+  REQUIRE_OK(w.sync(c).status());
+  auto again = rd.value()->scan_all("shift_annotations");
+  CHECK(again.value().size() == rows.value().size());
+}
+
+ARCHIVUM_TEST(a_meal_premium_is_applied_only_by_a_confirmed_rule_and_only_past_its_threshold) {
+  World w;
+  w.open();
+  auto meal = [&](int base, int out_minute_of_noon, int back_minute) {
+    IncomingBatch b;
+    b.batch_uuid = uid(240 + base);
+    b.journal_id = uid(640);
+    IncomingEntry out = w.punch(base * 10 + 1, base * 10 + 1, "out", base, 12, out_minute_of_noon);
+    out.break_code = "M";
+    b.entries = {w.punch(base * 10, base * 10, "in", base, 9), out, w.punch(base * 10 + 2, base * 10 + 2, "in", base, 12, back_minute)};
+    REQUIRE_OK(w.sync(b).status());
+  };
+  auto meals = [&]() {
+    auto rd = w.store->begin_read();
+    auto m = meals_in_period(*rd.value(), 1, 1);
+    return m.ok() ? m.value() : std::vector<MealBreak>();
+  };
+  meal(0, 0, 50);  // 50 minutes, no rule on file
+  REQUIRE(meals().size() == 1);
+  CHECK(meals()[0].minutes == 50 && !meals()[0].premium && meals()[0].premium_rule_id == 0);
+  // An unconfirmed rule is stored, recorded with its definition, and never applied.
+  REQUIRE_OK(w.act("break_premium_rule.add", [&](core::Recorder& rec) {
+    return add_premium_rule(rec, "M", 45, "greater_than", "meal longer than 45 minutes", "payroll reference (unconfirmed)", false, 19000, 0, "test", w.now)
+        .status();
+  }));
+  meal(1, 0, 50);
+  CHECK(!meals()[1].premium);
+  // Confirmed: applies to meals rebuilt from then on.
+  std::int64_t rule_id = 0;
+  REQUIRE_OK(w.act("break_premium_rule.add", [&](core::Recorder& rec) {
+    auto r = add_premium_rule(rec, "M", 45, "greater_than", "meal longer than 45 minutes", "payroll reference p. 12 (quoted by the requester)", true,
+                              19000, 0, "test", w.now);
+    if (!r.ok()) return r.status();
+    rule_id = r.value();
+    return Status();
+  }));
+  meal(2, 0, 50);   // 50 minutes: premium
+  meal(3, 0, 45);   // exactly 45: not over
+  auto all_meals = meals();
+  REQUIRE(all_meals.size() == 4);
+  CHECK(all_meals[2].premium && all_meals[2].premium_rule_id == rule_id);
+  CHECK(!all_meals[3].premium);
+  // A meal still in progress has no length and no premium.
+  IncomingBatch open_meal;
+  open_meal.batch_uuid = uid(260);
+  open_meal.journal_id = uid(640);
+  IncomingEntry out = w.punch(90, 90, "out", 4, 12);
+  out.break_code = "M";
+  open_meal.entries = {w.punch(89, 89, "in", 4, 9), out};
+  REQUIRE_OK(w.sync(open_meal).status());
+  CHECK(meals().back().minutes == -1 && !meals().back().premium);
+  // An unknown break code is refused per entry and nothing of it lands.
+  IncomingBatch bad;
+  bad.batch_uuid = uid(261);
+  bad.journal_id = uid(640);
+  IncomingEntry bad_out = w.punch(95, 95, "out", 5, 12);
+  bad_out.break_code = "Z";
+  bad.entries = {w.punch(94, 94, "in", 5, 9), bad_out};
+  auto r = w.sync(bad);
+  REQUIRE_OK(r.status());
+  CHECK(r.value().accepted == 1 && r.value().rejected == 1);
+  // A break code on an in punch is malformed, not merely unknown.
+  IncomingBatch wrong_kind;
+  wrong_kind.batch_uuid = uid(262);
+  wrong_kind.journal_id = uid(640);
+  IncomingEntry in_marked = w.punch(97, 97, "in", 6, 9);
+  in_marked.break_code = "M";
+  wrong_kind.entries = {in_marked};
+  auto wk = w.sync(wrong_kind);
+  CHECK(!wk.ok() || wk.value().rejected == 1);
+}
+
+ARCHIVUM_TEST(payroll_and_supervisor_edits_are_recorded_as_separate_classes_and_payroll_cannot_touch_a_held_timesheet) {
+  World w;
+  w.open();
+  IncomingBatch b;
+  b.batch_uuid = uid(271);
+  b.journal_id = uid(650);
+  b.entries = {w.punch(1, 1, "in", 0, 9), w.punch(2, 2, "out", 0, 17)};
+  REQUIRE_OK(w.sync(b).status());
+  auto edit = [&](const char* cls, const char* code, int correction_of) {
+    ManualEntry m;
+    m.employee_id = 1;
+    m.kind = "out";
+    m.device_time_us = kMonday + (17 * 3600 + 15 * 60) * kUs;
+    m.local_time = "2024-03-04T17:15:00";
+    m.correction_of = correction_of;
+    m.reason = "forgot to punch";
+    m.edit_class = cls;
+    m.reason_code = code;
+    m.editor = cls;
+    return w.act(std::string(cls) == "payroll" ? "payroll.edit" : "supervisor.edit", [&](core::Recorder& rec) { return record_manual_entry(rec, w.cfg, m, w.now).status(); });
+  };
+  CHECK(edit("payroll", "lowercase", 2).code() == ErrorCode::InvalidArgument);
+  CHECK(edit("payroll", "", 2).code() == ErrorCode::InvalidArgument);
+  CHECK(edit("hr", "FORGOT", 2).code() == ErrorCode::InvalidArgument);
+  REQUIRE_OK(edit("payroll", "FORGOT_PUNCH", 2));
+  auto rd = w.store->begin_read();
+  auto edits = all_entry_edits(*rd.value());
+  REQUIRE_OK(edits.status());
+  REQUIRE(edits.value().size() == 1);
+  CHECK(edits.value()[0].edit_class == "payroll" && edits.value()[0].reason_code == "FORGOT_PUNCH");
+  CHECK(w.audit_rows("payroll.edit") == 1 && w.audit_rows("supervisor.edit") == 0);
+  rd.value().reset();
+  // Put the timesheet on hold; payroll then has nothing to edit, a
+  // supervisor still does.
+  REQUIRE_OK(set_hours(w, 6 * 60, 30 * 60));
+  IncomingBatch c;
+  c.batch_uuid = uid(272);
+  c.journal_id = uid(650);
+  c.entries = {w.punch(3, 3, "in", 1, 9), w.punch(4, 4, "out", 1, 17)};
+  REQUIRE_OK(w.sync(c).status());
+  REQUIRE(hold_of(w).has_value());
+  ManualEntry held;
+  held.employee_id = 1;
+  held.kind = "out";
+  held.device_time_us = kMonday + (86400 + 17 * 3600 + 30 * 60) * kUs;
+  held.local_time = "2024-03-05T17:30:00";
+  held.correction_of = 4;
+  held.reason = "late punch";
+  held.edit_class = "payroll";
+  held.reason_code = "LATE_PUNCH";
+  held.editor = "payroll";
+  CHECK(w.act("payroll.edit", [&](core::Recorder& rec) { return record_manual_entry(rec, w.cfg, held, w.now).status(); }).code() ==
+        ErrorCode::NotFound);
+  CHECK(w.audit_rows("payroll.edit") == 1);  // the refused edit left nothing
+  held.edit_class = "supervisor";
+  REQUIRE_OK(w.act("supervisor.edit", [&](core::Recorder& rec) { return record_manual_entry(rec, w.cfg, held, w.now).status(); }));
+  CHECK(w.audit_rows("supervisor.edit") == 1);
+}
+
+ARCHIVUM_TEST(employee_numbers_are_stored_and_exported_as_the_payroll_system_wrote_them) {
+  World w;
+  w.open();
+  REQUIRE_OK(w.act("employee.update", [&](core::Recorder& rec) {
+    Employee e;
+    e.id = 1;
+    e.employee_number = "000123";
+    e.display_name = "Worker";
+    e.site_zone = "UTC";
+    e.created_at = e.updated_at = 1;
+    return rec.update("employees", e.to_row());
+  }));
+  IncomingBatch b;
+  b.batch_uuid = uid(281);
+  b.journal_id = uid(660);
+  b.entries = {w.punch(1, 1, "in", 0, 9), w.punch(2, 2, "out", 0, 17)};
+  REQUIRE_OK(w.sync(b).status());
+  auto rd = w.store->begin_read();
+  auto e = employee_by_number(*rd.value(), "000123");
+  REQUIRE_OK(e.status());
+  REQUIRE(e.value().has_value());
+  CHECK(e.value()->employee_number == "000123");
+  CHECK(!employee_by_number(*rd.value(), "123").value().has_value());  // no numeric folding
+  auto exp = rollback_export(*rd.value(), 1, false, kMonday);
+  REQUIRE_OK(exp.status());
+  REQUIRE(!exp.value().batches.empty());
+  // The old store's key for the number is employee_id.
+  CHECK(exp.value().batches[0]["entries"][0]["employee_id"] == "000123");
 }

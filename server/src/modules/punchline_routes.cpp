@@ -14,6 +14,7 @@
 #include <vector>
 #include <utility>
 #include <map>
+#include <cmath>
 #include <cstdlib>
 #include <algorithm>
 #include <drogon/drogon.h>
@@ -29,6 +30,7 @@
 #include "archivum/punchline/exceptions.h"
 #include "archivum/punchline/lifecycle.h"
 #include "archivum/punchline/localtime.h"
+#include "archivum/punchline/payroll.h"
 #include "archivum/punchline/rules.h"
 #include "archivum/punchline/schema.h"
 #include "archivum/punchline/sync.h"
@@ -260,6 +262,44 @@ Result<std::vector<std::int64_t>> scope_of(engine::Reader& rd, const Caller& c, 
 
 bool in_scope(const std::vector<std::int64_t>& scope, bool all, std::int64_t employee_id) {
   return all || std::find(scope.begin(), scope.end(), employee_id) != scope.end();
+}
+
+// The flag is a hold, and a held timesheet is hidden from payroll: a caller
+// who reaches payroll data through the payroll role, and is not an
+// administrator, does not see it, and acts on it as if it did not exist.
+bool hides_holds(const Caller& c) { return c.has_role("payroll") && !c.has_role("admin"); }
+
+nlohmann::json hold_json(const punchline::TimesheetHold& h) {
+  nlohmann::json j;
+  j["id"] = h.id;
+  j["employee_id"] = h.employee_id;
+  j["period_id"] = h.period_id;
+  j["reason"] = h.reason;
+  j["detail"] = h.detail;
+  j["opened_at_us"] = h.opened_at;
+  if (h.cleared_at != 0) j["cleared_at_us"] = h.cleared_at;
+  if (h.authorization_id != 0) j["authorization_id"] = h.authorization_id;
+  return j;
+}
+
+// Open holds as (employee, period) pairs.
+Result<std::set<std::pair<std::int64_t, std::int64_t>>> open_hold_pairs(engine::Reader& rd) {
+  auto rows = rd.scan_all("timesheet_holds");
+  if (!rows.ok()) return rows.status();
+  std::set<std::pair<std::int64_t, std::int64_t>> out;
+  for (const Row& r : rows.value()) {
+    const punchline::TimesheetHold h = punchline::TimesheetHold::from_row(r);
+    if (h.cleared_at == 0) out.insert({h.employee_id, h.period_id});
+  }
+  return out;
+}
+
+nlohmann::json annotations_json(engine::Reader& rd, std::int64_t shift_id) {
+  nlohmann::json list = nlohmann::json::array();
+  auto rows = rd.scan_all("shift_annotations", "shift_annotations_shift", engine::Bound{{Value::integer(shift_id)}}, engine::Bound{{Value::integer(shift_id)}});
+  if (!rows.ok()) return list;
+  for (const Row& r : rows.value()) list.push_back({{"code", r[2].as_text()}, {"detail", r[3].as_text()}});
+  return list;
 }
 
 std::string csv_field(const std::string& s) {
@@ -677,7 +717,7 @@ void PunchlineModule::register_routes(App& app_ref) {
           punchline::IncomingEntry e;
           if (!je.is_object()) co_return error_response(400, "invalid", "each entry must be an object", request_id);
           static const std::set<std::string> allowed = {"entry_uuid", "journal_sequence", "kind",     "device_time_us", "local_time",
-                                                        "site_zone",  "tzdb_version",     "pay_code", "note"};
+                                                        "site_zone",  "tzdb_version",     "pay_code", "note", "break_code"};
           std::string bad_key;
           for (const auto& [k, v] : je.items()) {
             if (allowed.count(k) == 0) bad_key = k;
@@ -697,9 +737,10 @@ void PunchlineModule::register_routes(App& app_ref) {
           auto tz = body_string(je, "tzdb_version", false);
           auto code = body_string(je, "pay_code", false);
           auto note = body_string(je, "note", false);
+          auto brk = body_string(je, "break_code", false);
           std::string problem = bad_key.empty() ? "" : "unknown key '" + bad_key + "'";
           for (const Status* s : {&seq.status(), &kind.status(), &at.status(), &local.status(), &zone.status(), &tz.status(), &code.status(),
-                                  &note.status()}) {
+                                  &note.status(), &brk.status()}) {
             if (!s->ok() && problem.empty()) problem = s->message();
           }
           if (!problem.empty()) {
@@ -714,6 +755,7 @@ void PunchlineModule::register_routes(App& app_ref) {
           e.tzdb_version = tz.value();
           e.pay_code = code.value();
           e.note = note.value();
+          e.break_code = brk.value();
           batch.entries.push_back(std::move(e));
         }
         if (b.contains("reports")) {
@@ -886,6 +928,13 @@ void PunchlineModule::register_routes(App& app_ref) {
         const Caller& c = who.value();
         auto w = self->store().begin_write();
         if (!w.ok()) co_return status_response(w.status(), request_id);
+        if (hides_holds(c) && to != "locked" && !number.value().empty()) {
+          auto target = punchline::employee_by_number(*w.value(), number.value());
+          if (target.ok() && target.value().has_value()) {
+            auto hold = punchline::open_hold(*w.value(), target.value()->id, period_id.value());
+            if (hold.ok() && hold.value()) co_return error_response(404, "not_found", "no such timesheet", request_id);
+          }
+        }
         core::Recorder rec(*w.value(), self->policy(), c.actor(), "period." + action, self->now_us(), note.value().empty() ? "" : "note given");
         if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
         nlohmann::json out;
@@ -941,8 +990,8 @@ void PunchlineModule::register_routes(App& app_ref) {
       "/api/v1/entries/manual",
       [self, mod](drogon::HttpRequestPtr req) -> Handler {
         const std::string request_id = new_request_id();
-        auto body = parse_body(req, {"employee_number", "kind", "device_time_us", "local_time", "pay_code", "note",
-                                     "correction_of", "reason"});
+        auto body = parse_body(req, {"employee_number", "kind", "device_time_us", "local_time", "pay_code", "note", "break_code",
+                                     "correction_of", "reason", "reason_code"});
         if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "entries.manual");
         auto who = co_await self->authenticator().authenticate(req, request_id);
         if (!who.ok()) co_return auth_error(who, request_id, "entries.manual");
@@ -955,8 +1004,10 @@ void PunchlineModule::register_routes(App& app_ref) {
         auto note = body_string(body.value(), "note", false);
         auto correction_of = body_int(body.value(), "correction_of", false);
         auto reason = body_string(body.value(), "reason");
-        for (const Status& s : {number.status(), kind.status(), at.status(), local.status(), code.status(),
-                                note.status(), correction_of.status(), reason.status()}) {
+        auto reason_code = body_string(body.value(), "reason_code");
+        auto break_code = body_string(body.value(), "break_code", false);
+        for (const Status& s : {number.status(), kind.status(), at.status(), local.status(), code.status(), note.status(),
+                                correction_of.status(), reason.status(), reason_code.status(), break_code.status()}) {
           if (!s.ok()) co_return status_response(s, request_id);
         }
         auto w = self->store().begin_write();
@@ -965,7 +1016,10 @@ void PunchlineModule::register_routes(App& app_ref) {
         if (!emp.ok()) co_return status_response(emp.status(), request_id);
         if (!emp.value().has_value()) co_return error_response(404, "not_found", "no such employee", request_id);
         // Standing: payroll, or the employee's supervisor at the time of the action.
-        bool allowed = c.has_role("payroll");
+        // The class of the edit is recorded and is its audit action: a payroll
+        // edit and a supervisor edit are different things in every report.
+        const bool by_payroll = c.has_role("payroll");
+        bool allowed = by_payroll;
         if (!allowed && c.has_role("supervisor") && c.employee_id) {
           auto sup = punchline::rules::supervisor_at(*w.value(), emp.value()->id, self->now_us());
           if (!sup.ok()) co_return status_response(sup.status(), request_id);
@@ -981,7 +1035,11 @@ void PunchlineModule::register_routes(App& app_ref) {
         m.note = note.value();
         m.correction_of = correction_of.value();
         m.reason = reason.value();
-        core::Recorder rec(*w.value(), self->policy(), c.actor(), m.correction_of != 0 ? "entry.correct" : "entry.manual", self->now_us());
+        m.reason_code = reason_code.value();
+        m.break_code = break_code.value();
+        m.edit_class = by_payroll ? "payroll" : "supervisor";
+        m.editor = c.describe();
+        core::Recorder rec(*w.value(), self->policy(), c.actor(), by_payroll ? "payroll.edit" : "supervisor.edit", self->now_us());
         if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
         auto e = punchline::record_manual_entry(rec, mod->config(), m, self->now_us());
         if (!e.ok()) co_return status_response(e.status(), request_id);
@@ -1011,9 +1069,21 @@ void PunchlineModule::register_routes(App& app_ref) {
         if (!scope.ok()) co_return status_response(scope.status(), request_id);
         auto items = punchline::open_exceptions(*rd.value(), all ? std::vector<std::int64_t>() : scope.value(), kind);
         if (!items.ok()) co_return status_response(items.status(), request_id);
+        auto held = open_hold_pairs(*rd.value());
+        if (!held.ok()) co_return status_response(held.status(), request_id);
+        const bool hide = hides_holds(who.value());
         nlohmann::json list = nlohmann::json::array();
         for (const punchline::Exception& x : items.value()) {
           if (!all && x.employee_id == 0) continue;  // device-only items go to payroll and admin
+          if (hide && x.employee_id != 0) {
+            // Payroll does not see what is about a held timesheet.
+            std::int64_t period = x.period_id;
+            if (period == 0 && x.entry_id != 0) {
+              auto entry = punchline::entry_by_id(*rd.value(), x.entry_id);
+              if (entry.ok() && entry.value().has_value()) period = entry.value()->period_id;
+            }
+            if (period != 0 && held.value().count({x.employee_id, period})) continue;
+          }
           list.push_back(exception_json(x));
         }
         co_return ok_response({{"exceptions", list}, {"count", list.size()}}, request_id);
@@ -1039,6 +1109,16 @@ void PunchlineModule::register_routes(App& app_ref) {
         auto x = punchline::exception_by_id(*w.value(), id.value());
         if (!x.ok()) co_return status_response(x.status(), request_id);
         if (!x.value().has_value()) co_return error_response(404, "not_found", "no such exception", request_id);
+        if (hides_holds(c) && x.value()->employee_id != 0) {
+          auto held = open_hold_pairs(*w.value());
+          if (!held.ok()) co_return status_response(held.status(), request_id);
+          std::int64_t period = x.value()->period_id;
+          if (period == 0 && x.value()->entry_id != 0) {
+            auto entry = punchline::entry_by_id(*w.value(), x.value()->entry_id);
+            if (entry.ok() && entry.value().has_value()) period = entry.value()->period_id;
+          }
+          if (period != 0 && held.value().count({x.value()->employee_id, period})) co_return error_response(404, "not_found", "no such exception", request_id);
+        }
         bool all = false;
         auto scope = scope_of(*w.value(), c, self->now_us(), all);
         if (!scope.ok()) co_return status_response(scope.status(), request_id);
@@ -1147,6 +1227,10 @@ void PunchlineModule::register_routes(App& app_ref) {
         auto period = punchline::period_by_id(*rd.value(), period_id.value());
         if (!period.ok()) co_return status_response(period.status(), request_id);
         if (!period.value().has_value()) co_return error_response(404, "not_found", "no such pay period", request_id);
+        auto hold = punchline::open_hold(*rd.value(), emp.value()->id, period_id.value());
+        if (!hold.ok()) co_return status_response(hold.status(), request_id);
+        // A timesheet held for overtime authorization is not there for payroll.
+        if (hold.value() && hides_holds(who.value())) co_return error_response(404, "not_found", "no such timesheet", request_id);
         auto entries = punchline::entries_in_period(*rd.value(), period_id.value(), emp.value()->id);
         auto shifts = punchline::shifts_in_period(*rd.value(), period_id.value(), emp.value()->id);
         if (!entries.ok()) co_return status_response(entries.status(), request_id);
@@ -1167,8 +1251,24 @@ void PunchlineModule::register_routes(App& app_ref) {
         out["shifts"] = nlohmann::json::array();
         std::int64_t total_us = 0;
         for (const punchline::Shift& s : shifts.value()) {
-          out["shifts"].push_back(shift_json(s));
+          nlohmann::json sj = shift_json(s);
+          sj["annotations"] = annotations_json(*rd.value(), s.id);  // L and E: informational, never pay
+          out["shifts"].push_back(std::move(sj));
           if (s.duration_us) total_us += *s.duration_us;
+        }
+        out["hold"] = hold.value() ? hold_json(*hold.value()) : nlohmann::json(nullptr);
+        out["meals"] = nlohmann::json::array();
+        if (auto meals = punchline::meals_in_period(*rd.value(), emp.value()->id, period_id.value()); meals.ok()) {
+          for (const punchline::MealBreak& m : meals.value()) {
+            nlohmann::json mj;
+            mj["out_entry_id"] = m.out_entry_id;
+            if (m.in_entry_id != 0) mj["in_entry_id"] = m.in_entry_id;
+            mj["local_day"] = punchline::format_local_day(m.local_day);
+            if (m.minutes >= 0) mj["minutes"] = m.minutes;
+            mj["premium"] = m.premium;
+            if (m.premium_rule_id != 0) mj["premium_rule_id"] = m.premium_rule_id;
+            out["meals"].push_back(mj);
+          }
         }
         out["states"] = states;
         out["device_attested_entries"] = device_attested;
@@ -1223,6 +1323,9 @@ void PunchlineModule::register_routes(App& app_ref) {
           j["device_attested_entries"] = device_attested;
           j["awaiting_approval"] = states.count("submitted") != 0;
           j["open_exceptions"] = open.ok() ? open.value().size() : 0;
+          auto hold = punchline::open_hold(*rd.value(), employee, period_id.value());
+          j["held_for_overtime_authorization"] = hold.ok() && hold.value().has_value();
+          if (hold.ok() && hold.value()) j["hold"] = hold_json(*hold.value());
           out["reports"].push_back(j);
         }
         co_return ok_response(out, request_id);
@@ -1255,8 +1358,13 @@ void PunchlineModule::register_routes(App& app_ref) {
         std::map<std::int64_t, std::map<std::string, std::int64_t>> hours;
         std::map<std::int64_t, int> shift_counts;
         int withheld = 0;
+        // Timesheets held for overtime authorization are not in payroll's
+        // view at all, and are not counted: payroll is not told they exist.
+        auto held = punchline::held_employees(*rd.value(), period_id.value());
+        if (!held.ok()) co_return status_response(held.status(), request_id);
         for (const Row& r : shifts.value()) {
           punchline::Shift s = punchline::Shift::from_row(r);
+          if (held.value().count(s.employee_id)) continue;
           if (s.state != "released" && s.state != "locked") {
             ++withheld;
             continue;
@@ -1332,14 +1440,31 @@ void PunchlineModule::register_routes(App& app_ref) {
           if (!a[core::audit::kRequestId].is_null()) j["request_id"] = a[core::audit::kRequestId].as_text();
           return j;
         };
+        const bool hide = hides_holds(who.value());
+        auto held_set = punchline::held_employees(*rd.value(), period_id.value());
+        if (!held_set.ok()) co_return status_response(held_set.status(), request_id);
+        const auto hidden = [&](std::int64_t employee) { return hide && held_set.value().count(employee) != 0; };
+        auto edits = punchline::all_entry_edits(*rd.value());
+        if (!edits.ok()) co_return status_response(edits.status(), request_id);
+        std::map<std::int64_t, punchline::EntryEdit> edit_of;
+        for (const punchline::EntryEdit& e : edits.value()) edit_of[e.entry_id] = e;
         nlohmann::json out;
         out["period"] = period_json(*period.value());
+        if (!hide) {
+          // The holds are for administrators and supervisors; payroll's report does not carry them.
+          out["holds"] = nlohmann::json::array();
+          auto holds = punchline::holds_in_period(*rd.value(), period_id.value());
+          if (holds.ok()) {
+            for (const punchline::TimesheetHold& h : holds.value()) out["holds"].push_back(hold_json(h));
+          }
+        }
         out["transitions"] = nlohmann::json::array();
         auto approvals = rd.value()->scan_all("approvals", "approvals_period", engine::Bound{{Value::integer(period_id.value())}},
                                               engine::Bound{{Value::integer(period_id.value())}});
         if (!approvals.ok()) co_return status_response(approvals.status(), request_id);
         for (const Row& r : approvals.value()) {
           punchline::Approval a = punchline::Approval::from_row(r);
+          if (hidden(a.employee_id)) continue;
           nlohmann::json j = audit_of(a.audit_id);
           j["employee_id"] = a.employee_id;
           j["from_state"] = a.from_state;
@@ -1357,10 +1482,16 @@ void PunchlineModule::register_routes(App& app_ref) {
         std::set<std::int64_t> employees;
         for (const Row& r : entries.value()) {
           punchline::TimeEntry e = punchline::TimeEntry::from_row(r);
+          if (hidden(e.employee_id)) continue;
           employees.insert(e.employee_id);
           if (e.attestation == "manual") {
             nlohmann::json j = entry_json(e);
             j["reason"] = e.correction_reason;
+            if (auto it = edit_of.find(e.id); it != edit_of.end()) {
+              j["edit_class"] = it->second.edit_class;  // payroll and supervisor edits are separate classes
+              j["reason_code"] = it->second.reason_code;
+              j["editor"] = it->second.editor;
+            }
             out["manual_entries"].push_back(j);
           }
         }
@@ -1413,9 +1544,304 @@ void PunchlineModule::register_routes(App& app_ref) {
           }
         }
         out["principals_checked"] = by_principal.size();
+        // Payroll edits are their own class: who edited punches, as payroll or
+        // as a supervisor, and how often, beside who holds which roles.
+        auto edits = punchline::all_entry_edits(*rd.value());
+        if (!edits.ok()) co_return status_response(edits.status(), request_id);
+        std::map<std::pair<std::string, std::string>, int> by_editor;
+        std::map<std::string, int> by_class;
+        for (const punchline::EntryEdit& e : edits.value()) {
+          ++by_editor[{e.edit_class, e.editor}];
+          ++by_class[e.edit_class];
+        }
+        out["edits_by_class"] = by_class;
+        out["edits_by_editor"] = nlohmann::json::array();
+        for (const auto& [key, n] : by_editor) out["edits_by_editor"].push_back({{"edit_class", key.first}, {"editor", key.second}, {"count", n}});
         co_return ok_response(out, request_id);
       },
       {drogon::Get});
+
+  // ---- payroll reference rules ----------------------------------------------
+  // docs/punchline-module.md, "Payroll reference rules".
+
+  // Scheduled hours per employee, effective-dated: what the flag compares the
+  // hours worked with. Stored in minutes, written and read in hours.
+  app.registerHandler(
+      "/api/v1/admin/schedule-hours",
+      [self, mod](drogon::HttpRequestPtr req) -> Handler {
+        const std::string request_id = new_request_id();
+        if (req->method() == drogon::Get) {
+          auto who = co_await self->authenticator().authenticate(req, request_id);
+          if (!who.ok()) co_return auth_error(who, request_id, "schedule_hours.list");
+          if (!who.value().has_role("admin") && !who.value().has_role("payroll")) {
+            co_return error_response(403, "forbidden", "admin or payroll role required", request_id);
+          }
+          auto rd = self->store().begin_read();
+          if (!rd.ok()) co_return status_response(rd.status(), request_id);
+          auto rows = rd.value()->scan_all("schedule_hours");
+          if (!rows.ok()) co_return status_response(rows.status(), request_id);
+          nlohmann::json list = nlohmann::json::array();
+          for (const Row& r : rows.value()) {
+            const punchline::ScheduleHours s = punchline::ScheduleHours::from_row(r);
+            nlohmann::json j;
+            j["id"] = s.id;
+            auto emp = punchline::employee_by_id(*rd.value(), s.employee_id);
+            if (emp.ok() && emp.value().has_value()) j["employee_number"] = emp.value()->employee_number;
+            j["effective_from_day"] = punchline::format_local_day(s.effective_from_day);
+            if (s.effective_to_day != 0) j["effective_to_day"] = punchline::format_local_day(s.effective_to_day);
+            j["scheduled_daily_hours"] = static_cast<double>(s.daily_minutes) / 60.0;
+            j["scheduled_weekly_hours"] = static_cast<double>(s.weekly_minutes) / 60.0;
+            list.push_back(j);
+          }
+          co_return ok_response({{"schedule_hours", list}}, request_id);
+        }
+        auto body = parse_body(req, {"employee_number", "effective_from_day", "effective_to_day", "scheduled_daily_hours", "scheduled_weekly_hours"});
+        if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "schedule_hours.set");
+        auto who = co_await self->authenticator().authenticate(req, request_id);
+        if (!who.ok()) co_return auth_error(who, request_id, "schedule_hours.set");
+        if (!who.value().has_role("admin") && !who.value().has_role("payroll")) {
+          co_return error_response(403, "forbidden", "admin or payroll role required", request_id);
+        }
+        auto number = body_string(body.value(), "employee_number");
+        auto from = body_string(body.value(), "effective_from_day");
+        auto to = body_string(body.value(), "effective_to_day", false);
+        for (const Status& s : {number.status(), from.status(), to.status()}) {
+          if (!s.ok()) co_return status_response(s, request_id);
+        }
+        const nlohmann::json& b = body.value();
+        if (!b.contains("scheduled_daily_hours") || !b["scheduled_daily_hours"].is_number() || !b.contains("scheduled_weekly_hours") ||
+            !b["scheduled_weekly_hours"].is_number()) {
+          co_return error_response(400, "invalid", "scheduled_daily_hours and scheduled_weekly_hours are required numbers", request_id);
+        }
+        const std::int64_t daily = std::llround(b["scheduled_daily_hours"].get<double>() * 60.0);
+        const std::int64_t weekly = std::llround(b["scheduled_weekly_hours"].get<double>() * 60.0);
+        auto fd = punchline::parse_local_time(from.value() + "T00:00:00");
+        if (!fd.ok()) co_return error_response(400, "invalid", "effective_from_day must be YYYY-MM-DD", request_id);
+        std::int64_t to_day = 0;
+        if (!to.value().empty()) {
+          auto td = punchline::parse_local_time(to.value() + "T00:00:00");
+          if (!td.ok()) co_return error_response(400, "invalid", "effective_to_day must be YYYY-MM-DD", request_id);
+          to_day = td.value().local_day;
+        }
+        auto w = self->store().begin_write();
+        if (!w.ok()) co_return status_response(w.status(), request_id);
+        auto emp = punchline::employee_by_number(*w.value(), number.value());
+        if (!emp.ok()) co_return status_response(emp.status(), request_id);
+        if (!emp.value().has_value()) co_return error_response(404, "not_found", "no such employee", request_id);
+        core::Recorder rec(*w.value(), self->policy(), who.value().actor(), "schedule_hours.set", self->now_us());
+        if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
+        auto id = punchline::set_schedule_hours(rec, emp.value()->id, fd.value().local_day, to_day, daily, weekly, who.value().describe(), self->now_us());
+        if (!id.ok()) co_return status_response(id.status(), request_id);
+        // New limits can put a timesheet over, or back under, them.
+        if (Status s = punchline::evaluate_employee_holds(rec, mod->config(), emp.value()->id, self->now_us()); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = rec.set_target("schedule_hours", std::to_string(id.value())); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = w.value()->commit(); !s.ok()) co_return status_response(s, request_id);
+        co_return ok_response({{"id", id.value()}}, request_id, 201);
+      },
+      {drogon::Get, drogon::Post});
+
+  // The supervisor's authorization of an employee's overtime for a period.
+  // Only the employee's own supervisor at the time (not payroll, not an
+  // administrator) authorizes it; it clears the hold and is audited.
+  app.registerHandler(
+      "/api/v1/supervisor/periods/{id}/authorize-overtime",
+      [self, mod](drogon::HttpRequestPtr req, std::string id_text) -> Handler {
+        const std::string request_id = new_request_id();
+        auto body = parse_body(req, {"employee_number", "note"});
+        if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "overtime.authorize");
+        auto who = co_await self->authenticator().authenticate(req, request_id);
+        if (!who.ok()) co_return auth_error(who, request_id, "overtime.authorize");
+        const Caller& c = who.value();
+        if (!c.has_role("supervisor") || !c.employee_id) co_return error_response(403, "forbidden", "supervisor role required", request_id);
+        auto period_id = path_id(id_text);
+        if (!period_id.ok()) co_return status_response(period_id.status(), request_id);
+        auto number = body_string(body.value(), "employee_number");
+        auto note = body_string(body.value(), "note", false);
+        for (const Status& s : {number.status(), note.status()}) {
+          if (!s.ok()) co_return status_response(s, request_id);
+        }
+        auto w = self->store().begin_write();
+        if (!w.ok()) co_return status_response(w.status(), request_id);
+        auto emp = punchline::employee_by_number(*w.value(), number.value());
+        if (!emp.ok()) co_return status_response(emp.status(), request_id);
+        if (!emp.value().has_value()) co_return error_response(404, "not_found", "no such employee", request_id);
+        auto sup = punchline::rules::supervisor_at(*w.value(), emp.value()->id, self->now_us());
+        if (!sup.ok()) co_return status_response(sup.status(), request_id);
+        if (!sup.value() || *sup.value() != *c.employee_id) {
+          co_return error_response(403, "forbidden", "only the employee's supervisor authorizes their overtime", request_id);
+        }
+        core::Recorder rec(*w.value(), self->policy(), c.actor(), "overtime.authorize", self->now_us(), note.value().empty() ? "" : "note given");
+        if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
+        auto a = punchline::authorize_overtime(rec, mod->config(), emp.value()->id, period_id.value(), note.value(), c.principal.tid, c.principal.oid, self->now_us());
+        if (!a.ok()) co_return status_response(a.status(), request_id);
+        if (Status s = rec.set_target("overtime_authorizations", std::to_string(a.value().id)); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = w.value()->commit(); !s.ok()) co_return status_response(s, request_id);
+        co_return ok_response({{"authorization_id", a.value().id}, {"authorized_overtime_hours_hundredths", a.value().authorized_minutes * 100 / 60}}, request_id, 201);
+      },
+      {drogon::Post});
+
+  // People grants supervisors their access: an audited role grant. Nobody
+  // else's role changes here, and the grant is to an employee's Entra
+  // identity, so an employee with none cannot be made a supervisor.
+  app.registerHandler(
+      "/api/v1/people/supervisors",
+      [self, mod](drogon::HttpRequestPtr req) -> Handler {
+        const std::string request_id = new_request_id();
+        if (req->method() == drogon::Get) {
+          auto who = co_await self->authenticator().authenticate(req, request_id);
+          if (!who.ok()) co_return auth_error(who, request_id, "people.supervisors");
+          if (!who.value().has_role("people")) co_return error_response(403, "forbidden", "people role required", request_id);
+          auto rd = self->store().begin_read();
+          if (!rd.ok()) co_return status_response(rd.status(), request_id);
+          auto grants = rd.value()->scan_all(core::kRoleGrants, "role_grants_role", engine::Bound{{Value::text("supervisor")}}, engine::Bound{{Value::text("supervisor")}});
+          if (!grants.ok()) co_return status_response(grants.status(), request_id);
+          nlohmann::json list = nlohmann::json::array();
+          for (const Row& r : grants.value()) {
+            nlohmann::json j;
+            j["granted_by"] = r[core::roles::kGrantedBy].as_text();
+            j["granted_at_us"] = r[core::roles::kGrantedAt].as_int64();
+            auto emp = punchline::employee_by_identity(*rd.value(), r[core::roles::kTid].as_text(), r[core::roles::kOid].as_text());
+            if (emp.ok() && emp.value().has_value()) j["employee"] = employee_json(*emp.value());
+            list.push_back(j);
+          }
+          co_return ok_response({{"supervisors", list}}, request_id);
+        }
+        auto body = parse_body(req, {"employee_number"});
+        if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "people.grant_supervisor");
+        auto who = co_await self->authenticator().authenticate(req, request_id);
+        if (!who.ok()) co_return auth_error(who, request_id, "people.grant_supervisor");
+        if (!who.value().has_role("people")) co_return error_response(403, "forbidden", "people role required", request_id);
+        auto number = body_string(body.value(), "employee_number");
+        if (!number.ok()) co_return status_response(number.status(), request_id);
+        auto w = self->store().begin_write();
+        if (!w.ok()) co_return status_response(w.status(), request_id);
+        auto emp = punchline::employee_by_number(*w.value(), number.value());
+        if (!emp.ok()) co_return status_response(emp.status(), request_id);
+        if (!emp.value().has_value()) co_return error_response(404, "not_found", "no such employee", request_id);
+        if (!emp.value()->active) co_return error_response(409, "constraint", "employee inactive", request_id);
+        if (emp.value()->tid.empty() || emp.value()->oid.empty()) {
+          co_return error_response(409, "constraint", "the employee has no Entra identity to grant supervisor access to", request_id);
+        }
+        core::Recorder rec(*w.value(), self->policy(), who.value().actor(), "people.grant_supervisor", self->now_us());
+        if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
+        auto id = core::grant_role(rec, emp.value()->tid, emp.value()->oid, "supervisor", who.value().describe(), self->now_us());
+        if (!id.ok()) co_return status_response(id.status(), request_id);
+        if (Status s = rec.set_target(core::kRoleGrants, std::to_string(id.value())); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = w.value()->commit(); !s.ok()) co_return status_response(s, request_id);
+        co_return ok_response({{"grant_id", id.value()}}, request_id, 201);
+      },
+      {drogon::Get, drogon::Post});
+
+  app.registerHandler(
+      "/api/v1/people/supervisors/revoke",
+      [self, mod](drogon::HttpRequestPtr req) -> Handler {
+        const std::string request_id = new_request_id();
+        auto body = parse_body(req, {"employee_number"});
+        if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "people.revoke_supervisor");
+        auto who = co_await self->authenticator().authenticate(req, request_id);
+        if (!who.ok()) co_return auth_error(who, request_id, "people.revoke_supervisor");
+        if (!who.value().has_role("people")) co_return error_response(403, "forbidden", "people role required", request_id);
+        auto number = body_string(body.value(), "employee_number");
+        if (!number.ok()) co_return status_response(number.status(), request_id);
+        auto w = self->store().begin_write();
+        if (!w.ok()) co_return status_response(w.status(), request_id);
+        auto emp = punchline::employee_by_number(*w.value(), number.value());
+        if (!emp.ok()) co_return status_response(emp.status(), request_id);
+        if (!emp.value().has_value()) co_return error_response(404, "not_found", "no such employee", request_id);
+        auto grants = w.value()->scan_all(core::kRoleGrants, "role_grants_principal", engine::Bound{{Value::text(emp.value()->tid), Value::text(emp.value()->oid)}},
+                                          engine::Bound{{Value::text(emp.value()->tid), Value::text(emp.value()->oid)}});
+        if (!grants.ok()) co_return status_response(grants.status(), request_id);
+        std::int64_t grant_id = 0;
+        for (const Row& r : grants.value()) {
+          if (r[core::roles::kRole].as_text() == "supervisor") grant_id = r[0].as_int64();
+        }
+        if (grant_id == 0) co_return error_response(404, "not_found", "that employee holds no supervisor access", request_id);
+        core::Recorder rec(*w.value(), self->policy(), who.value().actor(), "people.revoke_supervisor", self->now_us());
+        if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
+        if (Status s = core::revoke_role(rec, grant_id); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = rec.set_target(core::kRoleGrants, std::to_string(grant_id)); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = w.value()->commit(); !s.ok()) co_return status_response(s, request_id);
+        co_return ok_response({{"revoked", true}}, request_id);
+      },
+      {drogon::Post});
+
+  // The meal-premium rule: configuration with its definition and its source
+  // recorded. A rule stored unconfirmed is never applied; confirming means
+  // someone checked the definition against the payroll reference.
+  app.registerHandler(
+      "/api/v1/admin/break-premium-rules",
+      [self, mod](drogon::HttpRequestPtr req) -> Handler {
+        const std::string request_id = new_request_id();
+        if (req->method() == drogon::Get) {
+          auto who = co_await self->authenticator().authenticate(req, request_id);
+          if (!who.ok()) co_return auth_error(who, request_id, "break_rules.list");
+          if (!who.value().has_role("admin") && !who.value().has_role("payroll")) {
+            co_return error_response(403, "forbidden", "admin or payroll role required", request_id);
+          }
+          auto rd = self->store().begin_read();
+          if (!rd.ok()) co_return status_response(rd.status(), request_id);
+          auto rows = rd.value()->scan_all("break_premium_rules");
+          if (!rows.ok()) co_return status_response(rows.status(), request_id);
+          nlohmann::json list = nlohmann::json::array();
+          for (const Row& r : rows.value()) {
+            const punchline::BreakPremiumRule b = punchline::BreakPremiumRule::from_row(r);
+            nlohmann::json j;
+            j["id"] = b.id;
+            j["break_code"] = b.break_code;
+            j["threshold_minutes"] = b.threshold_minutes;
+            j["comparison"] = b.comparison;
+            j["definition"] = b.definition;
+            j["source"] = b.source;
+            j["confirmed"] = b.confirmed;
+            j["effective_from_day"] = punchline::format_local_day(b.effective_from_day);
+            if (b.effective_to_day != 0) j["effective_to_day"] = punchline::format_local_day(b.effective_to_day);
+            j["set_by"] = b.set_by;
+            list.push_back(j);
+          }
+          co_return ok_response({{"rules", list}}, request_id);
+        }
+        auto body = parse_body(req, {"break_code", "threshold_minutes", "comparison", "definition", "source", "confirmed", "effective_from_day", "effective_to_day"});
+        if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "break_rules.add");
+        auto who = co_await self->authenticator().authenticate(req, request_id);
+        if (!who.ok()) co_return auth_error(who, request_id, "break_rules.add");
+        if (!who.value().has_role("admin") && !who.value().has_role("payroll")) {
+          co_return error_response(403, "forbidden", "admin or payroll role required", request_id);
+        }
+        auto code = body_string(body.value(), "break_code");
+        auto threshold = body_int(body.value(), "threshold_minutes");
+        auto comparison = body_string(body.value(), "comparison");
+        auto definition = body_string(body.value(), "definition");
+        auto source = body_string(body.value(), "source");
+        auto from = body_string(body.value(), "effective_from_day");
+        auto to = body_string(body.value(), "effective_to_day", false);
+        for (const Status& s : {code.status(), threshold.status(), comparison.status(), definition.status(), source.status(), from.status(), to.status()}) {
+          if (!s.ok()) co_return status_response(s, request_id);
+        }
+        bool confirmed = false;
+        if (body.value().contains("confirmed")) {
+          if (!body.value()["confirmed"].is_boolean()) co_return error_response(400, "invalid", "confirmed must be true or false", request_id);
+          confirmed = body.value()["confirmed"].get<bool>();
+        }
+        auto fd = punchline::parse_local_time(from.value() + "T00:00:00");
+        if (!fd.ok()) co_return error_response(400, "invalid", "effective_from_day must be YYYY-MM-DD", request_id);
+        std::int64_t to_day = 0;
+        if (!to.value().empty()) {
+          auto td = punchline::parse_local_time(to.value() + "T00:00:00");
+          if (!td.ok()) co_return error_response(400, "invalid", "effective_to_day must be YYYY-MM-DD", request_id);
+          to_day = td.value().local_day;
+        }
+        auto w = self->store().begin_write();
+        if (!w.ok()) co_return status_response(w.status(), request_id);
+        core::Recorder rec(*w.value(), self->policy(), who.value().actor(), "break_rule.add", self->now_us());
+        if (!rec.status().ok()) co_return status_response(rec.status(), request_id);
+        auto id = punchline::add_premium_rule(rec, code.value(), threshold.value(), comparison.value(), definition.value(), source.value(), confirmed,
+                                              fd.value().local_day, to_day, who.value().describe(), self->now_us());
+        if (!id.ok()) co_return status_response(id.status(), request_id);
+        if (Status s = rec.set_target("break_premium_rules", std::to_string(id.value())); !s.ok()) co_return status_response(s, request_id);
+        if (Status s = w.value()->commit(); !s.ok()) co_return status_response(s, request_id);
+        co_return ok_response({{"id", id.value()}, {"confirmed", confirmed}}, request_id, 201);
+      },
+      {drogon::Get, drogon::Post});
 }
 
 }  // namespace archivum::server

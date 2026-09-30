@@ -90,7 +90,7 @@ ARCHIVUM_TEST(healthz_reports_certificate_and_jwks_state) {
   CHECK(body["tls"]["days_remaining"].get<int>() >= 398);
   CHECK(body["tls"]["warn_30_days"] == false);
   CHECK(body["oidc"]["jwks_keys"] == 1);
-  CHECK(body["database"]["schema_version"] == 2);
+  CHECK(body["database"]["schema_version"] == 4);
 }
 
 ARCHIVUM_TEST(whoami_without_token_is_401) {

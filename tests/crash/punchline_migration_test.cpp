@@ -4,6 +4,7 @@
 // at every step until it completes, and after each crash the store reopens
 // and the migration is rerun, ending in the same state every time.
 #include <cstdio>
+#include <map>
 
 #include "archivum/core/module.h"
 #include "archivum/core/schema.h"
@@ -48,8 +49,8 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
   auto r = core::migrate_all(store, {&punchline::module()});
   REQUIRE_OK(r.status());
   REQUIRE(r.value().modules.size() == 2);
-  CHECK(r.value().modules[0].first == core::kModule && r.value().modules[0].second.to_version == 1);
-  CHECK(r.value().modules[1].first == punchline::kModule && r.value().modules[1].second.to_version == 1);
+  CHECK(r.value().modules[0].first == core::kModule && r.value().modules[0].second.to_version == 2);
+  CHECK(r.value().modules[1].first == punchline::kModule && r.value().modules[1].second.to_version == 2);
   const std::size_t kCoreTables = 5;
   {
     auto rd = store.begin_read();
@@ -57,11 +58,11 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
     for (const std::string& name : punchline::v1_tables()) {
       CHECK_MSG(rd.value()->catalog().table(name) != nullptr, "missing table " << name);
     }
-    CHECK(rd.value()->catalog().tables.size() == punchline::v1_tables().size() + kCoreTables + 1);  // + archivum_migrations
-    CHECK(rd.value()->catalog().schema_version == 2);
+    CHECK(rd.value()->catalog().tables.size() == punchline::v1_tables().size() + punchline::v2_tables().size() + kCoreTables + 1);  // + archivum_migrations
+    CHECK(rd.value()->catalog().schema_version == 4);  // core 1, core 2, punchline 1, punchline 2
     auto codes = rd.value()->scan_all("pay_codes");
     REQUIRE_OK(codes.status());
-    CHECK(codes.value().size() == 5);
+    CHECK(codes.value().size() == 7);  // the five of migration 1, plus OT and DT
   }
   auto again = core::migrate_all(store, {&punchline::module()});
   REQUIRE_OK(again.status());
@@ -178,7 +179,7 @@ ARCHIVUM_TEST(punchline_schema_applies_and_holds_its_constraints) {
   auto rep = store.check();
   REQUIRE_OK(rep.status());
   CHECK_MSG(rep.value().ok, rep.value().problems[0]);
-  CHECK(rep.value().tables == punchline::v1_tables().size() + kCoreTables + 1);
+  CHECK(rep.value().tables == punchline::v1_tables().size() + punchline::v2_tables().size() + kCoreTables + 1);
 }
 
 ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
@@ -253,11 +254,11 @@ ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
       {
         auto rd = re.value()->begin_read();
         REQUIRE_OK(rd.status());
-        // Step boundaries: nothing, the core schema, or both.
+        // Step boundaries: nothing, core 1, core 2, punchline 1, or punchline 2.
         const std::uint64_t v = rd.value()->catalog().schema_version;
-        REQUIRE_MSG(v <= 2, "schema version " << v << " after crash at step " << step);
+        REQUIRE_MSG(v <= 4, "schema version " << v << " after crash at step " << step);
         const std::size_t n = rd.value()->catalog().tables.size();
-        REQUIRE_MSG((v == 0 && n == 0) || (v == 1 && n == 6) || (v == 2 && n == 17),
+        REQUIRE_MSG((v == 0 && n == 0) || (v == 1 && n == 6) || (v == 2 && n == 6) || (v == 3 && n == 17) || (v == 4 && n == 27),
                     "partial schema (" << n << " tables at version " << v << ") after crash at step " << step);
       }
       auto r = core::migrate_all(*re.value(), {&punchline::module()});
@@ -275,4 +276,81 @@ ARCHIVUM_TEST(punchline_migration_survives_a_crash_at_every_step) {
   }
   std::printf("  %d crash points\n", crashes);
   CHECK(crashes > 100);
+}
+
+// The format rule: what a version-1 store holds survives the upgrade to the
+// payroll-reference rules. The store is built with only the old migrations
+// (migration 1 of each module), populated the way a pilot store would be,
+// and then migrated forward: role grants keep their ids and values (the
+// core step rebuilds that table to admit the `people` role), the pay codes
+// swap to OT and DT without touching rows that used the old ones, and every
+// new table, seed and constraint is there.
+ARCHIVUM_TEST(upgrade_from_version_1_keeps_what_was_there_and_adds_the_payroll_rules) {
+  MemVfs vfs;
+  auto st = Store::open(vfs, "p/upgrade.db", opts());
+  REQUIRE_OK(st.status());
+  Store& store = *st.value();
+  REQUIRE_OK(engine::migrate(store, core::kModule, {core::migrations()[0]}).status());
+  REQUIRE_OK(engine::migrate(store, punchline::kModule, {punchline::migrations()[0]}).status());
+  const Value now = Value::timestamp(1'700'000'000'000'000);
+  {
+    auto w = store.begin_write();
+    REQUIRE_OK(w.status());
+    Writer& wr = *w.value();
+    // Version 1 does not know the people role.
+    CHECK(wr.insert("role_grants", {Value::integer(99), Value::text("t"), Value::text("o"), Value::text("people"), Value::text("seed"), now}).code() ==
+          ErrorCode::Constraint);
+    REQUIRE_OK(wr.insert("role_grants", {Value::integer(1), Value::text("tid-a"), Value::text("oid-a"), Value::text("supervisor"), Value::text("seed"), now}));
+    REQUIRE_OK(wr.insert("role_grants", {Value::integer(2), Value::text("tid-a"), Value::text("oid-b"), Value::text("payroll"), Value::text("seed"), now}));
+    REQUIRE_OK(wr.insert("role_grants", {Value::integer(7), Value::text("tid-a"), Value::text("oid-c"), Value::text("admin"), Value::text("seed"), now}));
+    REQUIRE_OK(wr.commit());
+  }
+  auto r = core::migrate_all(store, {&punchline::module()});
+  REQUIRE_OK(r.status());
+  CHECK(r.value().modules[0].second.applied.size() == 1 && r.value().modules[0].second.applied[0] == "core_people_role");
+  CHECK(r.value().modules[1].second.applied.size() == 1 && r.value().modules[1].second.applied[0] == "punchline_v2_payroll_rules");
+  auto rd = store.begin_read();
+  REQUIRE_OK(rd.status());
+  auto grants = rd.value()->scan_all("role_grants");
+  REQUIRE_OK(grants.status());
+  REQUIRE(grants.value().size() == 3);
+  CHECK(grants.value()[0][0].as_int64() == 1 && grants.value()[0][3].as_text() == "supervisor" && grants.value()[0][2].as_text() == "oid-a");
+  CHECK(grants.value()[1][0].as_int64() == 2 && grants.value()[1][3].as_text() == "payroll");
+  CHECK(grants.value()[2][0].as_int64() == 7 && grants.value()[2][3].as_text() == "admin");
+  for (const std::string& name : punchline::v2_tables()) CHECK_MSG(rd.value()->catalog().table(name) != nullptr, "missing table " << name);
+  auto codes = rd.value()->scan_all("pay_codes");
+  REQUIRE_OK(codes.status());
+  std::map<std::string, bool> active;
+  for (const Row& c : codes.value()) active[c[0].as_text()] = c[3].as_bool();
+  CHECK(active["OT"] && active["DT"] && active["regular"] && active["pto"] && active["holiday"]);
+  CHECK(!active["overtime"] && !active["double_time"]);  // kept, deactivated
+  auto annotations = rd.value()->scan_all("annotation_codes");
+  REQUIRE_OK(annotations.status());
+  CHECK(annotations.value().size() == 2);
+  auto breaks = rd.value()->scan_all("break_codes");
+  REQUIRE_OK(breaks.status());
+  REQUIRE(breaks.value().size() == 1);
+  CHECK(breaks.value()[0][0].as_text() == "M" && breaks.value()[0][2].as_bool());
+  auto rules = rd.value()->scan_all("break_premium_rules");
+  REQUIRE_OK(rules.status());
+  CHECK(rules.value().empty());  // no meal premium rule is seeded: it is configuration, and unconfirmed until someone confirms it
+  rd.value().reset();
+  {
+    // The wider check is live and still a check.
+    auto w = store.begin_write();
+    REQUIRE_OK(w.status());
+    REQUIRE_OK(w.value()->insert("role_grants", {Value::integer(8), Value::text("tid-a"), Value::text("oid-d"), Value::text("people"), Value::text("seed"), now}));
+    CHECK(w.value()->insert("role_grants", {Value::integer(9), Value::text("tid-a"), Value::text("oid-e"), Value::text("wizard"), Value::text("seed"), now}).code() ==
+          ErrorCode::Constraint);
+    // The principal index survived the rebuild: one grant per principal and role.
+    CHECK(w.value()->insert("role_grants", {Value::integer(10), Value::text("tid-a"), Value::text("oid-a"), Value::text("supervisor"), Value::text("seed"), now}).code() ==
+          ErrorCode::Constraint);
+    w.value()->rollback();
+  }
+  auto check = store.check();
+  REQUIRE_OK(check.status());
+  CHECK_MSG(check.value().ok, check.value().problems.empty() ? "" : check.value().problems[0]);
+  auto again = core::migrate_all(store, {&punchline::module()});
+  REQUIRE_OK(again.status());
+  CHECK(again.value().modules[0].second.applied.empty() && again.value().modules[1].second.applied.empty());
 }

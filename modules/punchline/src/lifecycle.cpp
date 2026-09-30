@@ -6,6 +6,7 @@
 
 #include "archivum/core/ids.h"
 #include "archivum/punchline/exceptions.h"
+#include "archivum/punchline/payroll.h"
 
 namespace archivum::punchline {
 namespace {
@@ -59,6 +60,13 @@ Result<TransitionResult> transition(core::Recorder& rec, const TransitionRequest
   if (!period.value().has_value()) return Status::not_found("no such pay period");
   if (period.value()->state != "open") return Status::constraint("PL-7: pay period is " + period.value()->state);
   if (Status s = rules::transition_allowed(w, req.employee_id, from, req.to_state, req.who, req.now_us); !s.ok()) return s;
+  if (req.to_state == "released") {
+    // The flag is a hold, not a state: a timesheet held for overtime
+    // authorization cannot be released, by anyone, override or not.
+    auto hold = open_hold(w, req.employee_id, req.period_id);
+    if (!hold.ok()) return hold.status();
+    if (hold.value()) return Status::constraint("PL-7: the timesheet is held for overtime authorization (" + hold.value()->detail + ")");
+  }
   auto entries = entries_in_period(w, req.period_id, req.employee_id);
   if (!entries.ok()) return entries.status();
   TransitionResult res;

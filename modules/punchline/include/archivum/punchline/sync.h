@@ -40,6 +40,7 @@ struct IncomingEntry {
   std::string site_zone, tzdb_version;
   std::string pay_code;  // optional
   std::string note;      // optional
+  std::string break_code;  // optional: an out punch marked M begins a meal
 };
 
 struct IncomingReport {
@@ -85,8 +86,14 @@ struct ManualEntry {
   std::string kind;
   std::int64_t device_time_us = 0;
   std::string local_time, pay_code, note;  // zone and release are the server's (employee record, embedded database)
+  std::string break_code;                  // optional, out punches only
   std::int64_t correction_of = 0;
-  std::string reason;
+  std::string reason;                      // free text, PL-4
+  // Payroll reference rules: who is editing and why. edit_class is `payroll`
+  // or `supervisor`; reason_code is a short code recorded with the edit. A
+  // payroll edit of a timesheet that is held for overtime authorization is
+  // refused as if the timesheet did not exist, because payroll cannot see it.
+  std::string edit_class, reason_code, editor;
 };
 Result<TimeEntry> record_manual_entry(core::Recorder& rec, const Config& cfg, const ManualEntry& m, std::int64_t now_us);
 

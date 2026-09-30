@@ -413,6 +413,227 @@ Status apply_v1(Writer& w) {
   return Status();
 }
 
+
+// ---- migration 2: the payroll-reference rules -----------------------------
+//
+// The engine has no ALTER, so everything here is a new table that points at
+// the existing ones. See docs/punchline-module.md, "Payroll reference rules".
+
+// Scheduled hours per employee, effective-dated (the `schedules` rows say
+// which days and what times; these say how many hours a day and a week the
+// employee is scheduled for, which is what the flag compares against).
+// Minutes, not hours, so the arithmetic is exact.
+TableDef schedule_hours() {
+  TableDef t;
+  t.name = "schedule_hours";
+  t.columns = {col("id", ColumnType::Integer),
+               col("employee_id", ColumnType::Integer),
+               col("effective_from_day", ColumnType::Integer),
+               col("effective_to_day", ColumnType::Integer, true),
+               col("daily_minutes", ColumnType::Integer),
+               col("weekly_minutes", ColumnType::Integer),
+               col("set_by", ColumnType::Text),
+               col("audit_id", ColumnType::Integer)};
+  t.primary_key = {"id"};
+  t.indexes = {index("schedule_hours_employee", {"employee_id", "effective_from_day"}), index("schedule_hours_audit", {"audit_id"})};
+  t.foreign_keys = {fk("schedule_hours_employee_fk", {"employee_id"}, "employees", {"id"}),
+                    fk("schedule_hours_audit_fk", {"audit_id"}, "audit_log", {"id"})};
+  t.checks = {at_least("schedule_hours_daily_min", "daily_minutes", 1), at_most("schedule_hours_daily_max", "daily_minutes", 1440),
+              at_least("schedule_hours_weekly_min", "weekly_minutes", 1), at_most("schedule_hours_weekly_max", "weekly_minutes", 10080),
+              column_at_or_after("schedule_hours_weekly_covers_daily", "weekly_minutes", "daily_minutes"),
+              column_after("schedule_hours_days_ordered", "effective_to_day", "effective_from_day")};
+  return t;
+}
+
+// A supervisor's authorization of an employee's overtime for a period: the
+// total minutes in the period that they authorized. More hours than that
+// re-open the hold.
+TableDef overtime_authorizations() {
+  TableDef t;
+  t.name = "overtime_authorizations";
+  t.columns = {col("id", ColumnType::Integer),
+               col("employee_id", ColumnType::Integer),
+               col("period_id", ColumnType::Integer),
+               col("authorized_minutes", ColumnType::Integer),
+               col("note", ColumnType::Text),
+               col("authorized_by_tid", ColumnType::Text),
+               col("authorized_by_oid", ColumnType::Text),
+               col("authorized_at", ColumnType::Timestamp),
+               col("audit_id", ColumnType::Integer)};
+  t.primary_key = {"id"};
+  t.indexes = {index("overtime_authorizations_timesheet", {"employee_id", "period_id", "id"}), index("overtime_authorizations_period", {"period_id"}),
+               index("overtime_authorizations_audit", {"audit_id"})};
+  t.foreign_keys = {fk("overtime_authorizations_employee_fk", {"employee_id"}, "employees", {"id"}),
+                    fk("overtime_authorizations_period_fk", {"period_id"}, "pay_periods", {"id"}),
+                    fk("overtime_authorizations_audit_fk", {"audit_id"}, "audit_log", {"id"})};
+  t.checks = {at_least("overtime_authorizations_minutes_min", "authorized_minutes", 0),
+              non_empty("overtime_authorizations_tid_nonempty", "authorized_by_tid"),
+              non_empty("overtime_authorizations_oid_nonempty", "authorized_by_oid")};
+  return t;
+}
+
+// The flag: a hold on an employee's timesheet for a period, NOT a lifecycle
+// state and NOT an exception. While one is open the timesheet is hidden from
+// payroll and cannot be released; a supervisor's overtime authorization
+// clears it.
+TableDef timesheet_holds() {
+  TableDef t;
+  t.name = "timesheet_holds";
+  t.columns = {col("id", ColumnType::Integer),
+               col("employee_id", ColumnType::Integer),
+               col("period_id", ColumnType::Integer),
+               col("reason", ColumnType::Text),
+               col("detail", ColumnType::Text),
+               col("opened_at", ColumnType::Timestamp),
+               col("cleared_at", ColumnType::Timestamp, true),
+               col("authorization_id", ColumnType::Integer, true),
+               col("audit_id", ColumnType::Integer)};
+  t.primary_key = {"id"};
+  t.indexes = {index("timesheet_holds_timesheet", {"employee_id", "period_id", "id"}), index("timesheet_holds_period", {"period_id", "cleared_at"}),
+               index("timesheet_holds_authorization", {"authorization_id"}), index("timesheet_holds_audit", {"audit_id"})};
+  t.foreign_keys = {fk("timesheet_holds_employee_fk", {"employee_id"}, "employees", {"id"}),
+                    fk("timesheet_holds_period_fk", {"period_id"}, "pay_periods", {"id"}),
+                    fk("timesheet_holds_authorization_fk", {"authorization_id"}, "overtime_authorizations", {"id"}),
+                    fk("timesheet_holds_audit_fk", {"audit_id"}, "audit_log", {"id"})};
+  t.checks = {one_of("timesheet_holds_reason_known", "reason", {"daily_hours", "weekly_hours"})};
+  return t;
+}
+
+// Annotations: informational codes relative to the schedule (L late, E
+// early). They never change pay.
+TableDef annotation_codes() {
+  TableDef t;
+  t.name = "annotation_codes";
+  t.columns = {col("code", ColumnType::Text), col("description", ColumnType::Text), col("active", ColumnType::Boolean)};
+  t.primary_key = {"code"};
+  t.checks = {non_empty("annotation_codes_code_nonempty", "code")};
+  return t;
+}
+TableDef shift_annotations() {
+  TableDef t;
+  t.name = "shift_annotations";
+  t.columns = {col("id", ColumnType::Integer), col("shift_id", ColumnType::Integer), col("code", ColumnType::Text), col("detail", ColumnType::Text)};
+  t.primary_key = {"id"};
+  t.indexes = {index("shift_annotations_shift", {"shift_id", "code"}, true), index("shift_annotations_code", {"code"})};
+  t.foreign_keys = {fk("shift_annotations_shift_fk", {"shift_id"}, "shifts", {"id"}),
+                    fk("shift_annotations_code_fk", {"code"}, "annotation_codes", {"code"})};
+  return t;
+}
+
+// Break codes (M meal) and the meal-premium rule. The rule is configuration
+// with its definition and its source recorded; an unconfirmed rule is stored
+// and never applied.
+TableDef break_codes() {
+  TableDef t;
+  t.name = "break_codes";
+  t.columns = {col("code", ColumnType::Text), col("description", ColumnType::Text), col("premium_eligible", ColumnType::Boolean),
+               col("active", ColumnType::Boolean)};
+  t.primary_key = {"code"};
+  t.checks = {non_empty("break_codes_code_nonempty", "code")};
+  return t;
+}
+TableDef break_premium_rules() {
+  TableDef t;
+  t.name = "break_premium_rules";
+  t.columns = {col("id", ColumnType::Integer),
+               col("break_code", ColumnType::Text),
+               col("threshold_minutes", ColumnType::Integer),
+               col("comparison", ColumnType::Text),
+               col("definition", ColumnType::Text),
+               col("source", ColumnType::Text),
+               col("confirmed", ColumnType::Boolean),
+               col("effective_from_day", ColumnType::Integer),
+               col("effective_to_day", ColumnType::Integer, true),
+               col("set_by", ColumnType::Text),
+               col("audit_id", ColumnType::Integer)};
+  t.primary_key = {"id"};
+  t.indexes = {index("break_premium_rules_code", {"break_code", "effective_from_day"}), index("break_premium_rules_audit", {"audit_id"})};
+  t.foreign_keys = {fk("break_premium_rules_code_fk", {"break_code"}, "break_codes", {"code"}),
+                    fk("break_premium_rules_audit_fk", {"audit_id"}, "audit_log", {"id"})};
+  t.checks = {at_least("break_premium_rules_threshold_min", "threshold_minutes", 0),
+              one_of("break_premium_rules_comparison_known", "comparison", {"greater_than", "at_least"}),
+              non_empty("break_premium_rules_definition_nonempty", "definition"), non_empty("break_premium_rules_source_nonempty", "source"),
+              column_after("break_premium_rules_days_ordered", "effective_to_day", "effective_from_day")};
+  return t;
+}
+// A punch marked with a break code (an out punch marked M begins a meal).
+TableDef entry_break_codes() {
+  TableDef t;
+  t.name = "entry_break_codes";
+  t.columns = {col("entry_id", ColumnType::Integer), col("break_code", ColumnType::Text)};
+  t.primary_key = {"entry_id"};
+  t.indexes = {index("entry_break_codes_code", {"break_code"})};
+  t.foreign_keys = {fk("entry_break_codes_entry_fk", {"entry_id"}, "time_entries", {"id"}),
+                    fk("entry_break_codes_code_fk", {"break_code"}, "break_codes", {"code"})};
+  return t;
+}
+// The meal a marked out punch began: ends at the employee's next punch.
+TableDef meal_breaks() {
+  TableDef t;
+  t.name = "meal_breaks";
+  t.columns = {col("id", ColumnType::Integer),
+               col("employee_id", ColumnType::Integer),
+               col("out_entry_id", ColumnType::Integer),
+               col("in_entry_id", ColumnType::Integer, true),
+               col("local_day", ColumnType::Integer),
+               col("started_at", ColumnType::Timestamp),
+               col("ended_at", ColumnType::Timestamp, true),
+               col("minutes", ColumnType::Integer, true),
+               col("premium", ColumnType::Boolean),
+               col("premium_rule_id", ColumnType::Integer, true)};
+  t.primary_key = {"id"};
+  t.indexes = {index("meal_breaks_out", {"out_entry_id"}, true), index("meal_breaks_employee", {"employee_id", "local_day"}),
+               index("meal_breaks_in", {"in_entry_id"}), index("meal_breaks_rule", {"premium_rule_id"})};
+  t.foreign_keys = {fk("meal_breaks_employee_fk", {"employee_id"}, "employees", {"id"}),
+                    fk("meal_breaks_out_fk", {"out_entry_id"}, "time_entries", {"id"}),
+                    fk("meal_breaks_in_fk", {"in_entry_id"}, "time_entries", {"id"}),
+                    fk("meal_breaks_rule_fk", {"premium_rule_id"}, "break_premium_rules", {"id"})};
+  t.checks = {at_least("meal_breaks_minutes_min", "minutes", 0)};
+  return t;
+}
+
+// An edit of a punch by payroll or by a supervisor: its class, its reason
+// code and who, one row per manual or corrected entry, so payroll edits and
+// supervisor edits are separate classes in every report.
+TableDef entry_edits() {
+  TableDef t;
+  t.name = "entry_edits";
+  t.columns = {col("id", ColumnType::Integer),        col("entry_id", ColumnType::Integer), col("edit_class", ColumnType::Text),
+               col("reason_code", ColumnType::Text),  col("editor", ColumnType::Text),      col("edited_at", ColumnType::Timestamp),
+               col("audit_id", ColumnType::Integer)};
+  t.primary_key = {"id"};
+  t.indexes = {index("entry_edits_entry", {"entry_id"}, true), index("entry_edits_class", {"edit_class", "edited_at"}), index("entry_edits_audit", {"audit_id"})};
+  t.foreign_keys = {fk("entry_edits_entry_fk", {"entry_id"}, "time_entries", {"id"}), fk("entry_edits_audit_fk", {"audit_id"}, "audit_log", {"id"})};
+  t.checks = {one_of("entry_edits_class_known", "edit_class", {"payroll", "supervisor"}), non_empty("entry_edits_reason_code_nonempty", "reason_code")};
+  return t;
+}
+
+Status apply_v2(Writer& w) {
+  if (w.catalog().table("time_entries") == nullptr) return Status::invalid_argument("punchline migration 1 must be applied first");
+  // Created in dependency order: overtime_authorizations before the holds
+  // that point at it, break_codes before what points at them.
+  for (const TableDef& t : {schedule_hours(), overtime_authorizations(), timesheet_holds(), annotation_codes(), shift_annotations(), break_codes(),
+                            break_premium_rules(), entry_break_codes(), meal_breaks(), entry_edits()}) {
+    if (Status s = w.create_table(t); !s.ok()) return s;
+  }
+  for (const auto& [code, description] : std::vector<std::pair<const char*, const char*>>{{"L", "Late"}, {"E", "Early"}}) {
+    if (Status s = w.insert("annotation_codes", {Value::text(code), Value::text(description), Value::boolean(true)}); !s.ok()) return s;
+  }
+  // M, meal, carries the premium marker; whether and when a premium applies is
+  // the configurable rule in break_premium_rules, which starts empty.
+  if (Status s = w.insert("break_codes", {Value::text("M"), Value::text("Meal"), Value::boolean(true), Value::boolean(true)}); !s.ok()) return s;
+  // The payroll reference's pay codes are OT and DT. They are added as the pay
+  // codes that change pay; the earlier overtime and double_time seeds are kept
+  // (rows may reference them) but deactivated.
+  for (const auto& [code, description] : std::vector<std::pair<const char*, const char*>>{{"OT", "Overtime"}, {"DT", "Double time"}}) {
+    if (Status s = w.insert("pay_codes", {Value::text(code), Value::text(description), Value::boolean(true), Value::boolean(true)}); !s.ok()) return s;
+  }
+  for (const auto& [code, description] : std::vector<std::pair<const char*, const char*>>{{"overtime", "Overtime"}, {"double_time", "Double time"}}) {
+    if (Status s = w.update("pay_codes", {Value::text(code), Value::text(description), Value::boolean(true), Value::boolean(false)}); !s.ok()) return s;
+  }
+  return Status();
+}
+
 }  // namespace
 
 const std::vector<std::string>& v1_tables() {
@@ -422,9 +643,17 @@ const std::vector<std::string>& v1_tables() {
   return names;
 }
 
+const std::vector<std::string>& v2_tables() {
+  static const std::vector<std::string> names = {"schedule_hours", "overtime_authorizations", "timesheet_holds", "annotation_codes",
+                                                 "shift_annotations", "break_codes", "break_premium_rules", "entry_break_codes",
+                                                 "meal_breaks", "entry_edits"};
+  return names;
+}
+
 const std::vector<Migration>& migrations() {
   static const std::vector<Migration> list = {
       Migration{1, "punchline_v1_schema", &apply_v1},
+      Migration{2, "punchline_v2_payroll_rules", &apply_v2},
   };
   return list;
 }
@@ -449,6 +678,19 @@ void Module::extend_policy(core::RecordPolicy& p) const {
                         "acted_at", "audit_id"});
   p.allow("exceptions", {"id", "kind", "state", "employee_id", "device_id", "entry_id", "period_id", "opened_at", "resolved_at",
                          "resolved_by", "resolution_audit_id"});
+  p.allow("schedule_hours", {"id", "employee_id", "effective_from_day", "effective_to_day", "daily_minutes", "weekly_minutes", "set_by", "audit_id"});
+  p.allow("overtime_authorizations", {"id", "employee_id", "period_id", "authorized_minutes", "authorized_by_tid", "authorized_by_oid", "authorized_at",
+                                      "audit_id"});
+  p.allow("timesheet_holds", {"id", "employee_id", "period_id", "reason", "opened_at", "cleared_at", "authorization_id", "audit_id"});
+  p.allow("annotation_codes", {"code", "description", "active"});
+  p.allow("shift_annotations", {"id", "shift_id", "code"});
+  p.allow("break_codes", {"code", "description", "premium_eligible", "active"});
+  p.allow("break_premium_rules", {"id", "break_code", "threshold_minutes", "comparison", "confirmed", "effective_from_day", "effective_to_day", "set_by",
+                                  "audit_id"});
+  p.allow("entry_break_codes", {"entry_id", "break_code"});
+  p.allow("meal_breaks", {"id", "employee_id", "out_entry_id", "in_entry_id", "local_day", "started_at", "ended_at", "minutes", "premium",
+                          "premium_rule_id"});
+  p.allow("entry_edits", {"id", "entry_id", "edit_class", "reason_code", "editor", "edited_at", "audit_id"});
 }
 
 const Module& module() {
