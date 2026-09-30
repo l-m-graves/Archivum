@@ -52,6 +52,13 @@ add_test(NAME tzcheck_synthetic_wrong_release_test
   COMMAND tzcheck_synthetic --pinned ${CMAKE_CURRENT_SOURCE_DIR}/tzdata/pinned-transitions-wrong-release.txt)
 set_tests_properties(tzcheck_synthetic_wrong_release_test PROPERTIES
   PASS_REGULAR_EXPRESSION "scoped to release 2000b, the embedded database is 2000a")
+# The real embedded database against its own pins. Fails while the database
+# is the empty placeholder (ARCHIVUM_TZDATA_ALLOW_EMPTY is OFF by default).
+set(ARCHIVUM_TZCHECK_TEST_ARGS --pinned ${CMAKE_SOURCE_DIR}/modules/punchline/tzdata/pinned-transitions.txt)
+if(ARCHIVUM_TZDATA_ALLOW_EMPTY)
+  list(APPEND ARCHIVUM_TZCHECK_TEST_ARGS --allow-empty)
+endif()
+add_test(NAME tzcheck_embedded_database COMMAND tzcheck ${ARCHIVUM_TZCHECK_TEST_ARGS})
 if(NOT WIN32)
   add_test(NAME tzdata_generate_test COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/tzdata/generate_test.sh ${CMAKE_SOURCE_DIR})
 endif()
@@ -88,3 +95,16 @@ archivum_add_server_test(server_saturation_test server/server_saturation_test.cp
 add_executable(e2e_server e2e/e2e_server.cpp)
 target_link_libraries(e2e_server PRIVATE archivum_server archivum_server_testing archivum_testsupport archivum_warnings)
 target_include_directories(e2e_server PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/server)
+
+# A test result from a binary older than its source is not a result. Every
+# test in this directory requires the fixture below, which builds the whole
+# tree first, unconditionally, so a bare `ctest`, `ctest -R x` and
+# `ctest --preset x` all run current binaries (docs/testing/running-tests.md).
+add_test(NAME build_is_current COMMAND ${CMAKE_COMMAND} --build ${CMAKE_BINARY_DIR} --config $<CONFIG>)
+set_tests_properties(build_is_current PROPERTIES FIXTURES_SETUP archivum_build TIMEOUT 3600)
+get_property(ARCHIVUM_ALL_TESTS DIRECTORY PROPERTY TESTS)
+foreach(t IN LISTS ARCHIVUM_ALL_TESTS)
+  if(NOT t STREQUAL "build_is_current")
+    set_property(TEST ${t} APPEND PROPERTY FIXTURES_REQUIRED archivum_build)
+  endif()
+endforeach()

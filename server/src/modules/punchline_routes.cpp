@@ -863,14 +863,16 @@ void PunchlineModule::register_routes(App& app_ref) {
       "/api/v1/periods/{id}/{action}",
       [self, mod](drogon::HttpRequestPtr req, std::string id_text, std::string action) -> Handler {
         const std::string request_id = new_request_id();
+        // The body is checked first, before the action is looked at, so that
+        // an asserted employee_id is refused on every path of this route.
+        auto body = parse_body(req, {"employee_number", "note", "override_reason"});
+        if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "period.transition");
         std::string to;
         if (action == "submit") to = "submitted";
         else if (action == "approve") to = "approved";
         else if (action == "release") to = "released";
         else if (action == "lock") to = "locked";
         else co_return error_response(404, "not_found", "no such action", request_id);
-        auto body = parse_body(req, {"employee_number", "note", "override_reason"});
-        if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "period.transition");
         auto who = co_await self->authenticator().authenticate(req, request_id);
         if (!who.ok()) co_return auth_error(who, request_id, "period.transition");
         auto period_id = path_id(id_text);
@@ -1022,9 +1024,9 @@ void PunchlineModule::register_routes(App& app_ref) {
       "/api/v1/exceptions/{id}/{action}",
       [self, mod](drogon::HttpRequestPtr req, std::string id_text, std::string action) -> Handler {
         const std::string request_id = new_request_id();
-        if (action != "resolve" && action != "dismiss") co_return error_response(404, "not_found", "no such action", request_id);
         auto body = parse_body(req, {"note"});
         if (!body.ok()) co_return co_await body_rejected(self, mod, req, request_id, body.status(), "exceptions.close");
+        if (action != "resolve" && action != "dismiss") co_return error_response(404, "not_found", "no such action", request_id);
         auto who = co_await self->authenticator().authenticate(req, request_id);
         if (!who.ok()) co_return auth_error(who, request_id, "exceptions.close");
         auto id = path_id(id_text);

@@ -460,6 +460,77 @@ ARCHIVUM_TEST(g_employee_id_from_a_device_is_a_tamper_signal) {
   CHECK(f.log_text().find("\"caller\":\"principal ") != std::string::npos);
 }
 
+std::uint64_t audit_rows() {
+  auto rd = fixture().app->store().begin_read();
+  std::uint64_t n = 0;
+  if (!rd.ok()) return n;
+  (void)rd.value()->scan("audit_log", "", std::nullopt, std::nullopt, false, [&](const engine::Row&) {
+    ++n;
+    return true;
+  });
+  return n;
+}
+
+// The ruling is every endpoint, and a new endpoint must be covered without
+// anyone remembering to add a case: this iterates the routes Drogon has
+// registered, sends `employee_id` in each body shape to every route that can
+// carry a body, unauthenticated and as an administrator, and requires a 400
+// that names the key, and no audit row from any of it. A route that looked at
+// its caller before its body, or never looked at its body, fails here.
+ARCHIVUM_TEST(g2_every_registered_route_refuses_employee_id_in_every_body_shape) {
+  auto& f = fixture();
+  REQUIRE_OK(f.run_status);
+  const auto routes = drogon::app().getHandlersInfo();
+  REQUIRE(routes.size() > 25);
+  const std::vector<std::string> shapes = {
+      R"({"employee_id": 1})",
+      R"({"employee_id": "E9999"})",
+      R"({"employee_id": null})",
+      R"({"wrapper": {"employee_id": 1}})",
+      R"({"entries": [{"employee_id": 1}]})",
+      R"({"a": [{"b": [{"employee_id": "x"}]}]})",
+  };
+  const std::uint64_t audit_before = audit_rows();
+  std::set<std::string> swept, bodyless;
+  int requests = 0;
+  for (const auto& [pattern, method, description] : routes) {
+    (void)description;
+    if (method != drogon::Post && method != drogon::Put && method != drogon::Patch && method != drogon::Delete) {
+      bodyless.insert(pattern);
+      continue;
+    }
+    std::string path;
+    for (std::size_t i = 0; i < pattern.size(); ++i) {
+      if (pattern[i] == '{') {
+        const std::size_t close = pattern.find('}', i);
+        REQUIRE(close != std::string::npos);
+        path += "1";
+        i = close;
+      } else {
+        path += pattern[i];
+      }
+    }
+    swept.insert(pattern);
+    for (const std::string& shape : shapes) {
+      for (const std::string& auth : {std::string(), admin()}) {
+        auto r = f.send(method, path, shape, auth);
+        ++requests;
+        CHECK_MSG(r.status == 400, pattern + " " + shape + (auth.empty() ? " (no auth)" : " (admin)") + " answered " + std::to_string(r.status) + ": " + r.body);
+        CHECK_MSG(r.body.find("employee_id") != std::string::npos, pattern + " " + shape + ": the refusal does not name the key: " + r.body);
+      }
+    }
+  }
+  CHECK_MSG(audit_rows() == audit_before, "the sweep wrote audit rows: " + std::to_string(audit_rows() - audit_before));
+  std::printf("  swept %zu body-carrying routes (%d requests); %zu routes take no body (GET and the like)\n", swept.size(), requests,
+              bodyless.size());
+  // The body-carrying routes the sweep must have found, so an enumeration
+  // that silently returned a different set cannot pass.
+  for (const char* must : {"/api/v1/device/sync", "/api/v1/device/heartbeat", "/api/v1/admin/employees", "/api/v1/admin/devices",
+                           "/api/v1/entries/manual", "/api/v1/admin/periods", "/api/v1/me/flag"}) {
+    CHECK_MSG(swept.count(must) == 1, std::string("the sweep did not find ") + must);
+  }
+}
+
 ARCHIVUM_TEST(h_monitor_flags_stale_devices_and_cutoffs) {
   auto& f = fixture();
   REQUIRE_OK(f.run_status);

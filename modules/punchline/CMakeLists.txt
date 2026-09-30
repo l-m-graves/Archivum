@@ -12,18 +12,32 @@ target_link_libraries(archivum_punchline PUBLIC archivum_core archivum_engine PR
 # and the generated file are both compiled without the warning set.
 set_source_files_properties(tzdata/embedded_tzdata.cpp PROPERTIES COMPILE_OPTIONS "")
 
-# Build-time assertion (Stage 6 rulings, item 1): the embedded database
-# must reproduce every transition zdump pinned at generation time, on every
-# platform, or the build fails. ARCHIVUM_TZDATA_ALLOW_EMPTY lets the
-# placeholder build until the IANA release is vendored; it is OFF in CI
-# once the database is in.
-option(ARCHIVUM_TZDATA_ALLOW_EMPTY "Allow building with no embedded time zone database" ON)
+# The embedded database's assertion (Stage 6 rulings, item 1): the embedded
+# database must be the release the pins are scoped to and must reproduce
+# every transition zdump pinned at generation time.
+#
+# It fails on an empty database by default. ARCHIVUM_TZDATA_ALLOW_EMPTY
+# exists for local development on a machine without the vendored release;
+# CI and production builds never set it, so a build with no database embedded
+# is red, not green. Where it runs:
+#   * every configuration: the ctest test `tzcheck_embedded_database`
+#     (tests/CMakeLists.txt), so a missing database fails one test and every
+#     other test still runs and reports;
+#   * a production build (ARCHIVUM_PRODUCTION_BUILD): also after linking
+#     tzcheck, so no production binary is produced without the database.
+option(ARCHIVUM_TZDATA_ALLOW_EMPTY "LOCAL DEVELOPMENT ONLY: allow an empty embedded time zone database; CI and production must not set this" OFF)
 add_executable(tzcheck ${CMAKE_SOURCE_DIR}/tools/tzdata/tzcheck.cpp)
 target_link_libraries(tzcheck PRIVATE archivum_punchline archivum_warnings)
 set(ARCHIVUM_TZCHECK_ARGS --pinned ${CMAKE_CURRENT_SOURCE_DIR}/tzdata/pinned-transitions.txt)
 if(ARCHIVUM_TZDATA_ALLOW_EMPTY)
   list(APPEND ARCHIVUM_TZCHECK_ARGS --allow-empty)
+  message(WARNING "ARCHIVUM_TZDATA_ALLOW_EMPTY is ON: tzcheck will pass with no time zone database. Local development only.")
 endif()
-add_custom_command(TARGET tzcheck POST_BUILD COMMAND tzcheck ${ARCHIVUM_TZCHECK_ARGS}
-  COMMENT "tzcheck: the embedded time zone database against the pinned zdump transitions")
+if(ARCHIVUM_PRODUCTION_BUILD)
+  if(ARCHIVUM_TZDATA_ALLOW_EMPTY)
+    message(FATAL_ERROR "ARCHIVUM_TZDATA_ALLOW_EMPTY cannot be combined with ARCHIVUM_PRODUCTION_BUILD")
+  endif()
+  add_custom_command(TARGET tzcheck POST_BUILD COMMAND tzcheck ${ARCHIVUM_TZCHECK_ARGS}
+    COMMENT "tzcheck: the embedded time zone database against the pinned zdump transitions")
+endif()
 add_dependencies(archivum_punchline_checked tzcheck)
